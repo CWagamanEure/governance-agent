@@ -120,7 +120,15 @@ export type RouteInfo = {
 };
 
 export function pickModel(alias: ModelAlias = 'sonnet'): { model: any; info: RouteInfo } {
-  if (process.env.KMS_AUTH_JWT) {
+  // Eigen gateway can authenticate in two modes:
+  //   (a) direct JWT via KMS_AUTH_JWT
+  //   (b) attestation → JWT exchange via KMS_SERVER_URL + KMS_PUBLIC_KEY
+  // Either one is sufficient; EigenCompute typically injects (b).
+  const hasEigenAuth =
+    !!process.env.KMS_AUTH_JWT ||
+    (!!process.env.KMS_SERVER_URL && !!process.env.KMS_PUBLIC_KEY);
+
+  if (hasEigenAuth) {
     const modelId = MODEL_IDS[alias].eigen;
     return {
       model: eigen(modelId),
@@ -136,7 +144,7 @@ export function pickModel(alias: ModelAlias = 'sonnet'): { model: any; info: Rou
     };
   }
   throw new Error(
-    'No LLM credentials: set KMS_AUTH_JWT (in-enclave) or ANTHROPIC_API_KEY (local).',
+    'No LLM credentials: set KMS_AUTH_JWT or KMS_SERVER_URL+KMS_PUBLIC_KEY (in-enclave), or ANTHROPIC_API_KEY (local).',
   );
 }
 

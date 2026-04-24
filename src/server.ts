@@ -130,6 +130,18 @@ app.post('/extract-test', async (c) => {
   return c.json(result, result.ok ? 200 : 500);
 });
 
+/**
+ * GET /debug/env-keys
+ *
+ * Temporary diagnostic. Returns the sorted list of all env var NAMES (no values).
+ * Lets us see what the TEE runtime injected without leaking any secret. Remove
+ * once the extraction pipeline is stable.
+ */
+app.get('/debug/env-keys', (c) => {
+  const keys = Object.keys(process.env).sort();
+  return c.json({ count: keys.length, keys });
+});
+
 app.get('/attestation', (c) => {
   let walletAddress: string | null = null;
   try {
