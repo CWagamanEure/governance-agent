@@ -1,17 +1,18 @@
-FROM --platform=linux/amd64 python:3.11.10-slim-bookworm
+FROM --platform=linux/amd64 node:22.11.0-bookworm-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV NODE_ENV=production \
+    NPM_CONFIG_UPDATE_NOTIFIER=false \
+    NPM_CONFIG_FUND=false
 
 WORKDIR /srv
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY package.json package-lock.json* ./
+RUN npm install --omit=dev --ignore-scripts
 
-COPY app ./app
+COPY src ./src
+COPY tsconfig.json ./
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# tsx runs TypeScript directly; avoids a compile step and matches dev.
+CMD ["./node_modules/.bin/tsx", "src/server.ts"]

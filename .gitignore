@@ -1,0 +1,12 @@
+.env
+.env.local
+node_modules/
+dist/
+.DS_Store
+.idea/
+.vscode/
+data/
+*.log
+
+# Private to the local checkout, not committed publicly.
+PLAN.md

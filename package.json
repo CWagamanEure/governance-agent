@@ -1,0 +1,31 @@
+{
+  "name": "governance-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "fetch:proposals": "tsx scripts/fetch-proposals.ts",
+    "fetch:votes": "tsx scripts/fetch-votes.ts",
+    "extract": "tsx scripts/extract.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^2.0.0",
+    "@hono/node-server": "^1.13.7",
+    "@layr-labs/ai-gateway-provider": "^1.0.1",
+    "ai": "^6.0.0",
+    "hono": "^4.6.14",
+    "tsx": "^4.19.2",
+    "viem": "^2.21.55",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.2"
+  }
+}
