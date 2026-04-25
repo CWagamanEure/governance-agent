@@ -29,6 +29,8 @@ import {
   APP_NAME as SNAPSHOT_APP_NAME,
 } from './snapshot.js';
 import type { Decision } from './policy.js';
+import { runPipeline, type SnapshotProposalRaw } from './pipeline.js';
+import type { AnalysisForPolicy, PolicyProfileT } from './policy.js';
 
 const VERSION = '0.1.0';
 const WALLET_PATH = "m/44'/60'/0'/0/0"; // viem default, documented for responses
@@ -242,6 +244,68 @@ app.post('/vote/sign', async (c) => {
     submission,
     app: SNAPSHOT_APP_NAME,
   });
+});
+
+/**
+ * POST /pipeline/run
+ *
+ * Run the full pipeline on a single proposal: optional LLM extraction →
+ * deterministic policy evaluation → optional vote signing. Returns the
+ * structured analysis, the evaluation (with triggered rules), an optional
+ * signed-but-unsubmitted vote envelope, and a deterministic markdown rationale.
+ *
+ * Body:
+ *   {
+ *     proposal:    <full Snapshot proposal JSON>,
+ *     analysis?:   <pre-built ProposalAnalysis to skip LLM extraction>,
+ *     profile?:    <PolicyProfileT, defaults to DEFAULT_PROFILE>,
+ *     sign?:       false   // if true, sign with the enclave wallet when
+ *                          // decision is FOR/AGAINST/ABSTAIN
+ *   }
+ *
+ * Notes:
+ *   - When `analysis` is supplied, the LLM is not called (useful while the
+ *     gateway path is unavailable).
+ *   - Signing is opt-in. The endpoint never auto-submits to Snapshot —
+ *     submission still goes through POST /vote/sign with submit=true.
+ */
+app.post('/pipeline/run', async (c) => {
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid JSON body' }, 400);
+  }
+
+  const proposal = body?.proposal as SnapshotProposalRaw | undefined;
+  if (!proposal || typeof proposal.id !== 'string') {
+    return c.json(
+      { error: "body must include a Snapshot proposal object with 'id'" },
+      400,
+    );
+  }
+
+  const analysis = body?.analysis as AnalysisForPolicy | undefined;
+  const profile = body?.profile as PolicyProfileT | undefined;
+  const shouldSign = body?.sign === true;
+
+  let account;
+  if (shouldSign) {
+    try {
+      account = walletAccount();
+    } catch (e: any) {
+      return c.json({ error: `cannot sign: ${e.message}` }, 503);
+    }
+  }
+
+  const result = await runPipeline({ proposal, analysis, profile, account });
+
+  // bigint timestamps in vote envelopes don't JSON-serialize natively
+  const safe = JSON.parse(
+    JSON.stringify(result, (_k, v) => (typeof v === 'bigint' ? Number(v) : v)),
+  );
+
+  return c.json(safe);
 });
 
 /**
