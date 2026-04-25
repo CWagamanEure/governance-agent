@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "fetch:proposals": "tsx scripts/fetch-proposals.ts",
     "fetch:votes": "tsx scripts/fetch-votes.ts",
-    "extract": "tsx scripts/extract.ts"
+    "extract": "tsx scripts/extract.ts",
+    "test:policy": "tsx scripts/test-policy.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^2.0.0",

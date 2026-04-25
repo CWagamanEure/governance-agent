@@ -8,11 +8,27 @@
  *   3. The wallet can sign a message and the signature recovers correctly.
  */
 
+import { existsSync } from 'node:fs';
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
+
+// Load .env if present (local dev). On EigenCompute the file isn't shipped
+// in the image — env vars come from the platform, so this no-ops there.
+if (existsSync('.env')) {
+  process.loadEnvFile('.env');
+}
+
 import { mnemonicToAccount } from 'viem/accounts';
 import { verifyMessage } from 'viem';
 import { extractOne, pickModel, type ModelAlias } from './llm.js';
+import {
+  signVote,
+  verifyEnvelope,
+  submitVote,
+  decisionToChoice,
+  APP_NAME as SNAPSHOT_APP_NAME,
+} from './snapshot.js';
+import type { Decision } from './policy.js';
 
 const VERSION = '0.1.0';
 const WALLET_PATH = "m/44'/60'/0'/0/0"; // viem default, documented for responses
@@ -128,6 +144,104 @@ app.post('/extract-test', async (c) => {
 
   const result = await extractOne(proposal, modelAlias);
   return c.json(result, result.ok ? 200 : 500);
+});
+
+/**
+ * POST /vote/sign
+ *
+ * Build + sign + (optionally) submit a Snapshot vote with the enclave wallet.
+ *
+ * Body:
+ *   {
+ *     space:        "arbitrumfoundation.eth",
+ *     proposal_id:  "0x008f1907..." (32-byte hex),
+ *     decision?:    "FOR" | "AGAINST" | "ABSTAIN",   // either this …
+ *     choice?:      1 | 2 | 3,                         // … or this (1-indexed)
+ *     reason?:      "free text included in the signed payload",
+ *     submit?:      false                              // default false: sign only, do not POST to Snapshot
+ *   }
+ *
+ * Response:
+ *   {
+ *     envelope:     { address, sig, data: { domain, types, primaryType, message } },
+ *     verification: { recovered: true | false },
+ *     submission:   null | { ok: true, receipt } | { ok: false, status, error }
+ *   }
+ *
+ * Default is sign-without-submit so we can validate payload construction
+ * without spamming Snapshot during development.
+ */
+app.post('/vote/sign', async (c) => {
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid JSON body' }, 400);
+  }
+
+  const space = typeof body?.space === 'string' ? body.space : null;
+  const proposalId = typeof body?.proposal_id === 'string' ? body.proposal_id : null;
+  if (!space || !proposalId) {
+    return c.json({ error: "body must include 'space' and 'proposal_id'" }, 400);
+  }
+
+  let choice: number | null = null;
+  if (typeof body?.choice === 'number') {
+    choice = body.choice;
+  } else if (typeof body?.decision === 'string') {
+    const d = body.decision as Decision;
+    choice = decisionToChoice(d);
+    if (choice === null) {
+      return c.json(
+        { error: `decision '${d}' cannot be auto-voted (use MANUAL_REVIEW path)` },
+        400,
+      );
+    }
+  } else {
+    return c.json({ error: "body must include 'choice' or 'decision'" }, 400);
+  }
+
+  const reason = typeof body?.reason === 'string' ? body.reason : '';
+  const shouldSubmit = body?.submit === true;
+
+  let acct;
+  try {
+    acct = walletAccount();
+  } catch (e: any) {
+    return c.json({ error: e.message }, 503);
+  }
+
+  let envelope;
+  try {
+    envelope = await signVote({
+      account: acct,
+      space,
+      proposalId: proposalId as `0x${string}`,
+      choice,
+      reason,
+    });
+  } catch (e: any) {
+    return c.json({ error: `sign failed: ${e.message}` }, 400);
+  }
+
+  const recovered = await verifyEnvelope(envelope);
+
+  let submission: unknown = null;
+  if (shouldSubmit) {
+    submission = await submitVote(envelope);
+  }
+
+  // Convert bigint timestamp for JSON response
+  const safeEnvelope = JSON.parse(
+    JSON.stringify(envelope, (_k, v) => (typeof v === 'bigint' ? Number(v) : v)),
+  );
+
+  return c.json({
+    envelope: safeEnvelope,
+    verification: { recovered },
+    submission,
+    app: SNAPSHOT_APP_NAME,
+  });
 });
 
 /**
