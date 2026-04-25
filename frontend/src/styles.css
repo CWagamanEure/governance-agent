@@ -1,0 +1,176 @@
+:root {
+  --bg: #0b0d10;
+  --bg-elev: #14171c;
+  --bg-elev-2: #1c2027;
+  --fg: #e8edf2;
+  --fg-dim: #8b94a3;
+  --fg-soft: #5b6473;
+  --accent: #62b8ff;
+  --accent-dim: #2a4a6b;
+  --good: #4ec98c;
+  --bad: #ff7878;
+  --warn: #f4c869;
+  --border: #232831;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  background: var(--bg-elev-2);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+pre {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+button {
+  font: inherit;
+  background: var(--bg-elev-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+button:hover { background: #2a2f37; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.primary {
+  background: var(--accent);
+  color: #001525;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+button.primary:hover { background: #7ec5ff; }
+button.danger { color: var(--bad); border-color: #4a2a2a; }
+
+.app {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 24px 20px 80px;
+}
+
+.muted { color: var(--fg-dim); }
+.tiny { font-size: 12px; color: var(--fg-soft); font-family: var(--mono); }
+.title { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+.subtitle { font-size: 14px; color: var(--fg-dim); margin: 0 0 24px; }
+
+/* Trust header */
+.trust {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 28px;
+}
+.trust h2 {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin: 0 0 10px;
+  color: var(--fg-dim);
+}
+.trust-grid {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  row-gap: 6px;
+  column-gap: 12px;
+  font-size: 13.5px;
+}
+.trust-grid > .k { color: var(--fg-dim); }
+.trust-grid > .v { font-family: var(--mono); word-break: break-all; }
+.trust-grid > .v.address { color: var(--accent); }
+.trust .badge {
+  display: inline-block;
+  background: var(--accent-dim);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-left: 6px;
+}
+
+/* Proposal card */
+.card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 18px 16px;
+  margin-bottom: 18px;
+}
+.card h3 { margin: 0 0 4px; font-size: 17px; font-weight: 600; }
+.card .meta { font-size: 12px; color: var(--fg-soft); margin-bottom: 14px; font-family: var(--mono); }
+.card .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.decision {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+}
+.decision-FOR { background: rgba(78, 201, 140, 0.13); color: var(--good); }
+.decision-AGAINST { background: rgba(255, 120, 120, 0.13); color: var(--bad); }
+.decision-ABSTAIN { background: rgba(244, 200, 105, 0.12); color: var(--warn); }
+.decision-MANUAL_REVIEW { background: rgba(98, 184, 255, 0.13); color: var(--accent); }
+
+.section {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.section h4 {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  margin: 0 0 8px;
+  color: var(--fg-dim);
+}
+.rule {
+  font-size: 13px;
+  margin-bottom: 6px;
+  font-family: var(--mono);
+}
+.rule .id { color: var(--accent); }
+.rule .reason { color: var(--fg); margin-left: 6px; }
+.rule .contrib { color: var(--fg-soft); margin-left: 6px; }
+
+.error {
+  border-color: #4a2a2a;
+  background: rgba(255, 120, 120, 0.06);
+  color: var(--bad);
+}

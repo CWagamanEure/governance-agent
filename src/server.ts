@@ -10,6 +10,7 @@
 
 import { existsSync } from 'node:fs';
 import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
 
 // Load .env if present (local dev). On EigenCompute the file isn't shipped
@@ -63,6 +64,11 @@ class HttpError extends Error {
 }
 
 const app = new Hono();
+
+// Open CORS for the demo. In a production product we'd lock this to known
+// origins (the deployed frontend) and require SIWE-authenticated requests
+// for the privileged endpoints.
+app.use('/*', cors({ origin: '*', allowHeaders: ['content-type'] }));
 
 app.get('/health', (c) => c.json({ ok: true, version: VERSION }));
 
