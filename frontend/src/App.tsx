@@ -3,17 +3,74 @@ import {
   BACKEND_URL,
   fetchSnapshotProposal,
   getAttestation,
+  getProfile,
   getPublicEnv,
   getWallet,
   runPipeline,
   type AttestationStub,
-  type Decision,
   type PipelineResult,
+  type StoredProfile,
   type WalletInfo,
 } from './api';
+import {
+  checkSession,
+  clearStoredAuth,
+  getStoredToken,
+  signInWithEthereum,
+} from './lib/auth';
 import { FEATURED } from './data';
+import { Onboarding } from './Onboarding';
+
+type AuthState =
+  | { status: 'loading' }
+  | { status: 'anonymous' }
+  | { status: 'authed'; address: string };
 
 export function App() {
+  const [auth, setAuth] = useState<AuthState>({ status: 'loading' });
+  const [profile, setProfile] = useState<StoredProfile | null>(null);
+  const [profileLoaded, setProfileLoaded] = useState(false);
+
+  // Resume session on page load if a token is stored.
+  useEffect(() => {
+    (async () => {
+      const sess = await checkSession();
+      if (sess) setAuth({ status: 'authed', address: sess.address });
+      else setAuth({ status: 'anonymous' });
+    })();
+  }, []);
+
+  // When authed, fetch the user's stored profile (or 404 → new user).
+  useEffect(() => {
+    if (auth.status !== 'authed') {
+      setProfile(null);
+      setProfileLoaded(false);
+      return;
+    }
+    const token = getStoredToken();
+    if (!token) return;
+    getProfile(token)
+      .then((p) => setProfile(p))
+      .catch(() => setProfile(null))
+      .finally(() => setProfileLoaded(true));
+  }, [auth]);
+
+  async function handleSignIn() {
+    try {
+      const { address } = await signInWithEthereum();
+      setAuth({ status: 'authed', address });
+    } catch (e: any) {
+      alert(`Sign-in failed: ${e?.message ?? String(e)}`);
+    }
+  }
+
+  function handleSignOut() {
+    clearStoredAuth();
+    setAuth({ status: 'anonymous' });
+    setProfile(null);
+    setProfileLoaded(false);
+  }
+
   return (
     <div className="app">
       <h1 className="title">Governance Agent · Arbitrum DAO</h1>
@@ -23,15 +80,56 @@ export function App() {
         are signed by a key that lives only inside the attested image.
       </p>
 
-      <TrustHeader />
+      <TrustHeader auth={auth} onSignIn={handleSignIn} onSignOut={handleSignOut} />
 
-      <h2 style={{ fontSize: 13, color: 'var(--fg-dim)', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '24px 0 12px' }}>
-        Featured proposals
-      </h2>
+      {auth.status === 'authed' && profileLoaded && !profile?.profile && (
+        <>
+          <h2 className="section-heading">Welcome — set your preferences</h2>
+          <Onboarding
+            onSaved={() => {
+              const token = getStoredToken();
+              if (token) getProfile(token).then((p) => setProfile(p));
+            }}
+          />
+        </>
+      )}
 
-      {FEATURED.map((p) => (
-        <ProposalCard key={p.id} proposalId={p.id} bundledAnalysis={p.analysis} />
-      ))}
+      {auth.status === 'authed' && profile?.profile && (
+        <>
+          <h2 className="section-heading">
+            Your policy <span className="muted tiny">v{profile.profile.version}</span>
+          </h2>
+          <ProfileSummary profile={profile} onEdit={() => setProfile({ ...profile, profile: null })} />
+
+          <h2 className="section-heading">Featured proposals</h2>
+          {FEATURED.map((p) => (
+            <ProposalCard key={p.id} proposalId={p.id} bundledAnalysis={p.analysis} authed={true} />
+          ))}
+        </>
+      )}
+
+      {auth.status === 'anonymous' && (
+        <>
+          <h2 className="section-heading">Sign in to set your preferences and vote</h2>
+          <div className="card" style={{ textAlign: 'center', padding: 28 }}>
+            <p className="muted" style={{ marginTop: 0 }}>
+              The agent uses a deterministic rule engine. Your preferences are stored as a
+              versioned profile and only the wallet you sign in with can update them.
+            </p>
+            <button className="primary" onClick={handleSignIn}>
+              Connect Wallet
+            </button>
+          </div>
+
+          <h2 className="section-heading">Sample (anonymous)</h2>
+          <p className="muted tiny" style={{ marginBottom: 12 }}>
+            Without sign-in, the agent uses its default profile and signs with the app-wide wallet.
+          </p>
+          {FEATURED.map((p) => (
+            <ProposalCard key={p.id} proposalId={p.id} bundledAnalysis={p.analysis} authed={false} />
+          ))}
+        </>
+      )}
 
       <p className="tiny" style={{ marginTop: 28, textAlign: 'center' }}>
         backend: {BACKEND_URL}
@@ -41,10 +139,18 @@ export function App() {
 }
 
 // ---------------------------------------------------------------------------
-// Trust header — wallet, public env, attestation status
+// Trust header
 // ---------------------------------------------------------------------------
 
-function TrustHeader() {
+function TrustHeader({
+  auth,
+  onSignIn,
+  onSignOut,
+}: {
+  auth: AuthState;
+  onSignIn: () => void;
+  onSignOut: () => void;
+}) {
   const [wallet, setWallet] = useState<WalletInfo | null>(null);
   const [env, setEnv] = useState<Record<string, string> | null>(null);
   const [attestation, setAttestation] = useState<AttestationStub | null>(null);
@@ -127,6 +233,60 @@ function TrustHeader() {
             github.com/CWagamanEure/governance-agent ↗
           </a>
         </div>
+
+        <div className="k">Session</div>
+        <div className="v">
+          {auth.status === 'loading' && <span className="muted">checking…</span>}
+          {auth.status === 'anonymous' && (
+            <button onClick={onSignIn}>Connect Wallet</button>
+          )}
+          {auth.status === 'authed' && (
+            <span>
+              <span style={{ color: 'var(--good)' }}>{auth.address}</span>{' '}
+              <button onClick={onSignOut} style={{ marginLeft: 8 }}>
+                Sign out
+              </button>
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Profile summary card
+// ---------------------------------------------------------------------------
+
+function ProfileSummary({
+  profile,
+  onEdit,
+}: {
+  profile: StoredProfile;
+  onEdit: () => void;
+}) {
+  if (!profile.profile) return null;
+  const p = profile.profile.profile_json;
+  return (
+    <div className="card">
+      <div className="row" style={{ justifyContent: 'space-between' }}>
+        <div>
+          <div className="tiny">version {profile.profile.version} · hash <code>{profile.profile.hash.slice(0, 10)}…</code></div>
+          <div style={{ fontSize: 14, marginTop: 8 }}>
+            <span className="muted">Treasury:</span> {p.treasury_conservatism}/5{' '}
+            <span className="muted" style={{ marginLeft: 12 }}>Decentralization:</span>{' '}
+            {p.decentralization_priority}/5{' '}
+            <span className="muted" style={{ marginLeft: 12 }}>Sustainability:</span>{' '}
+            {p.growth_vs_sustainability}/5{' '}
+            <span className="muted" style={{ marginLeft: 12 }}>Risk-aversion:</span>{' '}
+            {p.protocol_risk_tolerance}/5
+          </div>
+          <div className="tiny" style={{ marginTop: 6 }}>
+            Auto-approve cap: ${p.max_treasury_usd_auto?.toLocaleString() ?? '—'} ·{' '}
+            Manual-review categories: {p.manual_review_categories.length}
+          </div>
+        </div>
+        <button onClick={onEdit}>Edit</button>
       </div>
     </div>
   );
@@ -140,9 +300,11 @@ function TrustHeader() {
 function ProposalCard({
   proposalId,
   bundledAnalysis,
+  authed,
 }: {
   proposalId: string;
   bundledAnalysis?: any;
+  authed: boolean;
 }) {
   const [proposal, setProposal] = useState<any | null>(null);
   const [pipeline, setPipeline] = useState<PipelineResult | null>(null);
@@ -159,17 +321,26 @@ function ProposalCard({
   useEffect(() => {
     if (!proposal || pipeline) return;
     setLoading(true);
-    runPipeline({ proposal, analysis: bundledAnalysis })
+    runPipeline({
+      proposal,
+      analysis: bundledAnalysis,
+      token: authed ? getStoredToken() : null,
+    })
       .then((r) => setPipeline(r))
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
-  }, [proposal, pipeline, bundledAnalysis]);
+  }, [proposal, pipeline, bundledAnalysis, authed]);
 
   async function castVote() {
     if (!proposal) return;
     setLoading(true);
     try {
-      const r = await runPipeline({ proposal, analysis: bundledAnalysis, sign: true });
+      const r = await runPipeline({
+        proposal,
+        analysis: bundledAnalysis,
+        sign: true,
+        token: authed ? getStoredToken() : null,
+      });
       setSigned(r);
     } catch (e) {
       setError(String(e));
@@ -212,9 +383,7 @@ function ProposalCard({
         </p>
       )}
 
-      {loading && !pipeline && (
-        <p className="muted tiny">running pipeline…</p>
-      )}
+      {loading && !pipeline && <p className="muted tiny">running pipeline…</p>}
 
       {decision && pipeline?.evaluation && (
         <>
@@ -240,11 +409,7 @@ function ProposalCard({
                   <span className="reason">— {r.reason}</span>
                   {r.contribution && (
                     <span className="contrib">
-                      (
-                      {Object.entries(r.contribution)
-                        .map(([k, v]) => `${k} +${v}`)
-                        .join(', ')}
-                      )
+                      ({Object.entries(r.contribution).map(([k, v]) => `${k} +${v}`).join(', ')})
                     </span>
                   )}
                 </div>
@@ -254,8 +419,14 @@ function ProposalCard({
 
           <div className="row" style={{ marginTop: 16 }}>
             {decision === 'FOR' || decision === 'AGAINST' || decision === 'ABSTAIN' ? (
-              <button className="primary" onClick={castVote} disabled={loading || !!signed}>
-                {signed ? 'Signed in TEE ✓' : `Sign vote (${decision}) inside enclave`}
+              <button
+                className="primary"
+                onClick={castVote}
+                disabled={loading || !!signed}
+              >
+                {signed
+                  ? 'Signed in TEE ✓'
+                  : `Sign vote (${decision}) inside enclave${authed ? ' as your derived wallet' : ''}`}
               </button>
             ) : (
               <span className="muted tiny">
@@ -272,8 +443,9 @@ function ProposalCard({
                 <span style={{ color: 'var(--accent)' }}>
                   {signed.vote.envelope.address}
                 </span>{' '}
-                — the enclave-bound app wallet. Snapshot will accept this if
-                the voting window is open and the wallet has voting power.
+                — {authed ? 'your enclave-derived wallet.' : 'the app-wide enclave wallet.'}{' '}
+                Snapshot will accept this if the voting window is open and the
+                wallet has voting power.
               </p>
               <pre>{JSON.stringify(signed.vote.envelope, null, 2)}</pre>
             </div>

@@ -174,3 +174,16 @@ button.danger { color: var(--bad); border-color: #4a2a2a; }
   background: rgba(255, 120, 120, 0.06);
   color: var(--bad);
 }
+
+.section-heading {
+  font-size: 13px;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 28px 0 12px;
+  font-weight: 600;
+}
+
+input[type="range"] {
+  accent-color: var(--accent);
+}

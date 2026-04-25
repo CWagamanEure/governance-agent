@@ -7,7 +7,9 @@ ENV NODE_ENV=production \
 WORKDIR /srv
 
 COPY package.json package-lock.json* ./
-RUN npm install --omit=dev --ignore-scripts
+# `better-sqlite3` ships prebuilt binaries via a postinstall script. We can't
+# use --ignore-scripts here without losing the native binding.
+RUN npm install --omit=dev
 
 COPY src ./src
 COPY tsconfig.json ./

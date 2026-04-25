@@ -31,7 +31,30 @@ import {
 } from './snapshot.js';
 import type { Decision } from './policy.js';
 import { runPipeline, type SnapshotProposalRaw } from './pipeline.js';
-import type { AnalysisForPolicy, PolicyProfileT } from './policy.js';
+import {
+  PolicyProfile as PolicyProfileSchema,
+  compileProfileToRules,
+  type AnalysisForPolicy,
+  type PolicyProfileT,
+} from './policy.js';
+import {
+  initDb,
+  findOrCreateUser,
+  saveProfile,
+  getLatestProfile,
+  listAudit,
+  appendAudit,
+} from './db.js';
+import {
+  generateNonce,
+  verifySiwe,
+  issueSession,
+  readAuth,
+  getAuthedAddress,
+  requireAuth,
+  AuthRequiredError,
+} from './auth.js';
+import { userWallet, appWallet } from './wallets.js';
 
 const VERSION = '0.1.0';
 const WALLET_PATH = "m/44'/60'/0'/0/0"; // viem default, documented for responses
@@ -63,12 +86,19 @@ class HttpError extends Error {
   }
 }
 
+// Initialize storage before any request can hit it.
+initDb();
+
 const app = new Hono();
 
 // Open CORS for the demo. In a production product we'd lock this to known
 // origins (the deployed frontend) and require SIWE-authenticated requests
 // for the privileged endpoints.
-app.use('/*', cors({ origin: '*', allowHeaders: ['content-type'] }));
+app.use('/*', cors({ origin: '*', allowHeaders: ['content-type', 'authorization'] }));
+
+// Populate c.get('user_address') from a Bearer token if present. Does not
+// reject unauthed requests — handlers call requireAuth(c) when they need it.
+app.use('/*', readAuth);
 
 app.get('/health', (c) => c.json({ ok: true, version: VERSION }));
 
@@ -292,19 +322,39 @@ app.post('/pipeline/run', async (c) => {
   }
 
   const analysis = body?.analysis as AnalysisForPolicy | undefined;
-  const profile = body?.profile as PolicyProfileT | undefined;
+  const bodyProfile = body?.profile as PolicyProfileT | undefined;
   const shouldSign = body?.sign === true;
+
+  // If authenticated:
+  //   - sign with the user's deterministically-derived per-user wallet
+  //   - use the user's stored profile if the body didn't override it
+  // If not authenticated:
+  //   - sign with the app-wide default wallet (legacy curl-demo path)
+  //   - use whatever profile the body provided (or DEFAULT_PROFILE downstream)
+  const authedAddr = getAuthedAddress(c);
+
+  let effectiveProfile: PolicyProfileT | undefined = bodyProfile;
+  if (authedAddr && !effectiveProfile) {
+    const user = findOrCreateUser(authedAddr);
+    const stored = getLatestProfile(user.id);
+    if (stored) effectiveProfile = JSON.parse(stored.profile_json);
+  }
 
   let account;
   if (shouldSign) {
     try {
-      account = walletAccount();
+      account = authedAddr ? userWallet(authedAddr as `0x${string}`) : walletAccount();
     } catch (e: any) {
       return c.json({ error: `cannot sign: ${e.message}` }, 503);
     }
   }
 
-  const result = await runPipeline({ proposal, analysis, profile, account });
+  const result = await runPipeline({
+    proposal,
+    analysis,
+    profile: effectiveProfile,
+    account,
+  });
 
   // bigint timestamps in vote envelopes don't JSON-serialize natively
   const safe = JSON.parse(
@@ -312,6 +362,152 @@ app.post('/pipeline/run', async (c) => {
   );
 
   return c.json(safe);
+});
+
+/**
+ * POST /auth/siwe/nonce
+ *
+ * Issue a single-use nonce for a SIWE message. Client embeds it in the
+ * EIP-4361 message it asks the wallet to sign.
+ */
+app.post('/auth/siwe/nonce', (c) => {
+  return c.json({ nonce: generateNonce() });
+});
+
+/**
+ * POST /auth/siwe/verify
+ *
+ * Body: { message: <full SIWE text>, signature: 0x... }
+ * Returns: { address, token } — the JWT goes in `Authorization: Bearer <token>`.
+ */
+app.post('/auth/siwe/verify', async (c) => {
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid JSON body' }, 400);
+  }
+  if (typeof body?.message !== 'string' || typeof body?.signature !== 'string') {
+    return c.json({ error: "body must include 'message' and 'signature' strings" }, 400);
+  }
+  try {
+    const { address } = await verifySiwe({
+      message: body.message,
+      signature: body.signature as `0x${string}`,
+    });
+    findOrCreateUser(address); // ensure a user row exists
+    const token = await issueSession(address);
+    return c.json({
+      address: address.toLowerCase(),
+      token,
+      expires_in: 7 * 24 * 60 * 60,
+    });
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? String(e) }, 401);
+  }
+});
+
+/**
+ * GET /auth/me
+ *
+ * Returns the authenticated user (from the Bearer token), or unauthenticated.
+ * Used by the frontend to check session validity on page load.
+ */
+app.get('/auth/me', (c) => {
+  const addr = getAuthedAddress(c);
+  if (!addr) return c.json({ authenticated: false });
+  return c.json({ authenticated: true, address: addr });
+});
+
+/**
+ * POST /profile
+ *
+ * Save a versioned PolicyProfile for the authenticated user. The address is
+ * taken from the Bearer token, NOT the request body — only the user can
+ * write their own profile.
+ *
+ * Body: { profile: <PolicyProfileT> }
+ */
+app.post('/profile', async (c) => {
+  let address: string;
+  try {
+    address = requireAuth(c);
+  } catch (e) {
+    return c.json({ error: 'authentication required' }, 401);
+  }
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid JSON body' }, 400);
+  }
+
+  const parsed = PolicyProfileSchema.safeParse(body?.profile);
+  if (!parsed.success) {
+    return c.json({ error: 'invalid profile', issues: parsed.error.issues }, 400);
+  }
+
+  const user = findOrCreateUser(address);
+  const rules = compileProfileToRules(parsed.data);
+  const saved = saveProfile({ user_id: user.id, profile: parsed.data, rules });
+
+  return c.json({
+    user: { id: user.id, eth_address: user.eth_address },
+    profile: {
+      id: saved.id,
+      version: saved.version,
+      hash: saved.hash,
+      created_at: saved.created_at,
+    },
+    compiled_rule_count: rules.length,
+  });
+});
+
+/**
+ * GET /profile
+ *
+ * Return the latest profile for the authenticated user (or 404 if no profile
+ * has been saved yet).
+ */
+app.get('/profile', (c) => {
+  let address: string;
+  try {
+    address = requireAuth(c);
+  } catch {
+    return c.json({ error: 'authentication required' }, 401);
+  }
+
+  const user = findOrCreateUser(address);
+  const latest = getLatestProfile(user.id);
+  if (!latest) {
+    return c.json({ user: { id: user.id, eth_address: user.eth_address }, profile: null }, 404);
+  }
+  return c.json({
+    user: { id: user.id, eth_address: user.eth_address },
+    profile: {
+      id: latest.id,
+      version: latest.version,
+      hash: latest.hash,
+      created_at: latest.created_at,
+      profile_json: JSON.parse(latest.profile_json),
+      rules_json: JSON.parse(latest.rules_json),
+    },
+  });
+});
+
+/**
+ * GET /audit
+ *
+ * Hash-chained audit log. Optionally filter by user_id.
+ *
+ *   ?user_id=...        — only events for this user
+ *   ?limit=100          — max rows (default 100, hard cap 1000)
+ */
+app.get('/audit', (c) => {
+  const user_id = c.req.query('user_id') || undefined;
+  const limit = c.req.query('limit') ? parseInt(c.req.query('limit')!, 10) : 100;
+  return c.json({ items: listAudit({ user_id, limit }) });
 });
 
 /**

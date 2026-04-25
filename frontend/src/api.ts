@@ -99,15 +99,67 @@ export async function runPipeline(args: {
   analysis?: any;
   profile?: any;
   sign?: boolean;
+  token?: string | null;
 }): Promise<PipelineResult> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (args.token) headers.authorization = `Bearer ${args.token}`;
+  const { token: _t, ...body } = args;
   const r = await fetch(`${BACKEND_URL}/pipeline/run`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(args),
+    headers,
+    body: JSON.stringify(body),
   });
   if (!r.ok) {
     throw new Error(`pipeline error: ${r.status} ${await r.text()}`);
   }
+  return r.json();
+}
+
+// ---------------------------------------------------------------------------
+// Profile (authed)
+// ---------------------------------------------------------------------------
+
+export type StoredProfile = {
+  user: { id: string; eth_address: string };
+  profile: {
+    id: string;
+    version: number;
+    hash: string;
+    created_at: number;
+    profile_json: any;
+    rules_json: any[];
+  } | null;
+};
+
+export async function getProfile(token: string): Promise<StoredProfile | null> {
+  const r = await fetch(`${BACKEND_URL}/profile`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (r.status === 404) {
+    const j = (await r.json()) as StoredProfile;
+    return j;
+  }
+  if (!r.ok) throw new Error(`profile fetch failed: ${r.status}`);
+  return r.json();
+}
+
+export async function saveProfile(args: {
+  token: string;
+  profile: any;
+}): Promise<{
+  user: { id: string; eth_address: string };
+  profile: { id: string; version: number; hash: string; created_at: number };
+  compiled_rule_count: number;
+}> {
+  const r = await fetch(`${BACKEND_URL}/profile`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${args.token}`,
+    },
+    body: JSON.stringify({ profile: args.profile }),
+  });
+  if (!r.ok) throw new Error(`profile save failed: ${r.status} ${await r.text()}`);
   return r.json();
 }
 
