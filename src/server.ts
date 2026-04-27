@@ -21,6 +21,7 @@ if (existsSync('.env')) {
 
 import { mnemonicToAccount } from 'viem/accounts';
 import { verifyMessage } from 'viem';
+import { AttestClient } from '@layr-labs/ecloud-sdk/attest';
 import { extractOne, pickModel, type ModelAlias } from './llm.js';
 import {
   signVote,
@@ -569,6 +570,39 @@ app.get('/audit', (c) => {
 app.get('/debug/env-keys', (c) => {
   const keys = Object.keys(process.env).sort();
   return c.json({ count: keys.length, keys });
+});
+
+/**
+ * GET /debug/jwt
+ *
+ * Mints a fresh JWT via the EigenCompute attestation flow and returns the
+ * raw token plus decoded header/payload. Diagnostic only — share with Eigen
+ * support to debug gateway verification failures. Remove before production.
+ */
+app.get('/debug/jwt', async (c) => {
+  const kmsServerURL = process.env.KMS_SERVER_URL;
+  const kmsPublicKey = process.env.KMS_PUBLIC_KEY;
+  if (!kmsServerURL || !kmsPublicKey) {
+    return c.json({ error: 'KMS_SERVER_URL or KMS_PUBLIC_KEY not set' }, 503);
+  }
+  const audience = (c.req.query('audience') ?? 'llm-proxy').trim();
+  try {
+    const client = new AttestClient({ kmsServerURL, kmsPublicKey, audience });
+    const jwt = await client.attest();
+    const [h, p, s] = jwt.split('.');
+    const decode = (seg: string) =>
+      JSON.parse(Buffer.from(seg.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+    return c.json({
+      jwt,
+      header: h ? decode(h) : null,
+      payload: p ? decode(p) : null,
+      signature_b64url_len: s?.length ?? 0,
+      kms_public_key_len: kmsPublicKey.length,
+      audience,
+    });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
 });
 
 app.get('/attestation', (c) => {
