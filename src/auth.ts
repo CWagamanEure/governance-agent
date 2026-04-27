@@ -42,8 +42,9 @@ function pruneNonces() {
 
 export function generateNonce(): string {
   pruneNonces();
-  // SIWE alphanumeric, 17+ chars
-  const nonce = randomBytes(12).toString('base64url');
+  // SIWE / EIP-4361 requires nonce to be ≥8 alphanumeric chars. base64url
+  // includes `-` and `_` and fails viem's validator, so we use hex (0-9a-f).
+  const nonce = randomBytes(12).toString('hex'); // 24 chars, alphanumeric
   nonces.set(nonce, Date.now());
   return nonce;
 }

@@ -40,6 +40,11 @@ export const PolicyProfile = z.object({
   max_treasury_usd_auto: z.number().nullable(),
   author_blocklist: z.array(z.string()),
   manual_review_categories: z.array(Category),
+
+  // Free-text values written by the user during onboarding — kept verbatim so
+  // the user (and any reviewer) can read what they actually said. The LLM may
+  // later use these to score per-user alignment when extracting proposals.
+  stated_values: z.array(z.string()).default([]),
 });
 export type PolicyProfileT = z.infer<typeof PolicyProfile>;
 
@@ -427,6 +432,7 @@ export const DEFAULT_PROFILE: PolicyProfileT = {
   max_treasury_usd_auto: 500_000,
   author_blocklist: [],
   manual_review_categories: ['CONTRACT_UPGRADE', 'OWNERSHIP_TRANSFER'],
+  stated_values: [],
 };
 
 export const CONSERVATIVE_PROFILE: PolicyProfileT = {
@@ -442,6 +448,7 @@ export const CONSERVATIVE_PROFILE: PolicyProfileT = {
     'TOKENOMICS',
     'META_GOVERNANCE',
   ],
+  stated_values: [],
 };
 
 export const GROWTH_PROFILE: PolicyProfileT = {
@@ -452,4 +459,5 @@ export const GROWTH_PROFILE: PolicyProfileT = {
   max_treasury_usd_auto: 2_000_000,
   author_blocklist: [],
   manual_review_categories: ['OWNERSHIP_TRANSFER'],
+  stated_values: [],
 };

@@ -163,6 +163,40 @@ export async function saveProfile(args: {
   return r.json();
 }
 
+export type CompiledProfileResponse = {
+  profile: any;
+  source: 'llm' | 'fallback';
+  warnings?: string[];
+};
+
+export async function compileProfile(args: {
+  token: string;
+  stated_values_text: string;
+  calibration: Array<{
+    proposal_id: string;
+    proposal_title?: string;
+    proposal_category?: string;
+    proposal_summary?: string;
+    user_choice: 'FOR' | 'AGAINST' | 'ABSTAIN';
+    reason?: string;
+    personal_not_policy?: boolean;
+  }>;
+}): Promise<CompiledProfileResponse> {
+  const r = await fetch(`${BACKEND_URL}/profile/compile`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${args.token}`,
+    },
+    body: JSON.stringify({
+      stated_values_text: args.stated_values_text,
+      calibration: args.calibration,
+    }),
+  });
+  if (!r.ok) throw new Error(`profile compile failed: ${r.status} ${await r.text()}`);
+  return r.json();
+}
+
 // ---------------------------------------------------------------------------
 // Snapshot — fetch a single proposal by id
 // ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@
 
 import { generateObject } from 'ai';
 import { createAnthropic } from '@ai-sdk/anthropic';
-import { eigen } from '@layr-labs/ai-gateway-provider';
+import { createEigenGateway } from '@layr-labs/ai-gateway-provider';
 import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
@@ -119,19 +119,48 @@ export type RouteInfo = {
   modelId: string;
 };
 
+// Sepolia/testnet apps must hit the dev gateway; mainnet apps hit the prod one.
+// The KMS that signs JWTs and the gateway that verifies them must be from the
+// same environment, otherwise RSA verification fails on the gateway.
+const DEFAULT_EIGEN_GATEWAY_URL = 'https://ai-gateway-dev.eigencloud.xyz';
+
+let loggedEigenEnv = false;
+function logEigenEnvOnce() {
+  if (loggedEigenEnv) return;
+  loggedEigenEnv = true;
+  const pk = process.env.KMS_PUBLIC_KEY;
+  console.log('[eigen] gateway:', process.env.EIGEN_GATEWAY_URL ?? `(default ${DEFAULT_EIGEN_GATEWAY_URL})`);
+  console.log('[eigen] KMS_SERVER_URL:', process.env.KMS_SERVER_URL ?? '(unset)');
+  console.log('[eigen] KMS_PUBLIC_KEY:', pk ? `${pk.slice(0, 40)}… (${pk.length} chars)` : '(unset)');
+  console.log('[eigen] KMS_AUTH_JWT:', process.env.KMS_AUTH_JWT ? '(present)' : '(unset)');
+}
+
 export function pickModel(alias: ModelAlias = 'sonnet'): { model: any; info: RouteInfo } {
   // Eigen gateway can authenticate in two modes:
   //   (a) direct JWT via KMS_AUTH_JWT
   //   (b) attestation → JWT exchange via KMS_SERVER_URL + KMS_PUBLIC_KEY
   // Either one is sufficient; EigenCompute typically injects (b).
-  const hasEigenAuth =
-    !!process.env.KMS_AUTH_JWT ||
-    (!!process.env.KMS_SERVER_URL && !!process.env.KMS_PUBLIC_KEY);
+  const hasJwt = !!process.env.KMS_AUTH_JWT;
+  const hasAttest = !!process.env.KMS_SERVER_URL && !!process.env.KMS_PUBLIC_KEY;
 
-  if (hasEigenAuth) {
+  if (hasJwt || hasAttest) {
+    logEigenEnvOnce();
     const modelId = MODEL_IDS[alias].eigen;
+    const baseURL = process.env.EIGEN_GATEWAY_URL ?? DEFAULT_EIGEN_GATEWAY_URL;
+    const eigenGw = createEigenGateway({
+      baseURL,
+      jwt: process.env.KMS_AUTH_JWT,
+      attestConfig: hasAttest
+        ? {
+            kmsServerURL: process.env.KMS_SERVER_URL!,
+            kmsPublicKey: process.env.KMS_PUBLIC_KEY!,
+            audience: 'llm-proxy',
+          }
+        : undefined,
+      debug: process.env.EIGEN_DEBUG === 'true',
+    });
     return {
-      model: eigen(modelId),
+      model: eigenGw(modelId),
       info: { route: 'eigen-proxy', modelId },
     };
   }

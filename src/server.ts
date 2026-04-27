@@ -55,6 +55,7 @@ import {
   AuthRequiredError,
 } from './auth.js';
 import { userWallet, appWallet } from './wallets.js';
+import { compileProfile } from './profile-compiler.js';
 
 const VERSION = '0.1.0';
 const WALLET_PATH = "m/44'/60'/0'/0/0"; // viem default, documented for responses
@@ -462,6 +463,54 @@ app.post('/profile', async (c) => {
     },
     compiled_rule_count: rules.length,
   });
+});
+
+/**
+ * POST /profile/compile
+ *
+ * Take the user's free-text values + calibration votes and return a compiled
+ * PolicyProfile for them to review BEFORE saving. Does not persist anything.
+ *
+ * Body:
+ *   {
+ *     stated_values_text: "free text...",
+ *     calibration: [{ proposal_id, proposal_title, proposal_category,
+ *                     user_choice: "FOR"|"AGAINST"|"ABSTAIN",
+ *                     reason?, personal_not_policy? }]
+ *   }
+ */
+app.post('/profile/compile', async (c) => {
+  try {
+    requireAuth(c);
+  } catch {
+    return c.json({ error: 'authentication required' }, 401);
+  }
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid JSON body' }, 400);
+  }
+
+  const stated_values_text =
+    typeof body?.stated_values_text === 'string' ? body.stated_values_text : '';
+  const calibration = Array.isArray(body?.calibration) ? body.calibration : [];
+
+  if (stated_values_text.trim().length < 10 && calibration.length === 0) {
+    return c.json({ error: 'must provide stated_values_text or calibration votes' }, 400);
+  }
+
+  try {
+    const result = await compileProfile({ stated_values_text, calibration });
+    return c.json({
+      profile: result.profile,
+      source: result.source,
+      warnings: result.warnings,
+    });
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? String(e) }, 500);
+  }
 });
 
 /**
