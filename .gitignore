@@ -10,3 +10,4 @@ data/
 
 # Private to the local checkout, not committed publicly.
 PLAN.md
+EIGEN_GATEWAY_DEBUG.md

@@ -65,6 +65,8 @@ export type PipelineResult = {
   extraction_skipped: boolean;
   extraction_error?: string;
   evaluation: PolicyEvaluation | null;
+  decision_blob: any | null;
+  decision_blob_error?: string;
   vote: { envelope: SignedVoteEnvelope; choice: number } | null;
   rationale_md: string;
   pipeline_version: string;

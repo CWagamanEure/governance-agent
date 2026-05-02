@@ -31,6 +31,7 @@ import {
   type PolicyProfileT,
 } from './policy.js';
 import { decisionToChoice, signVote, type SignedVoteEnvelope } from './snapshot.js';
+import { signDecisionBlob, type SignedDecisionBlob } from './decision-blob.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,6 +54,10 @@ export type PipelineInput = {
   proposal: SnapshotProposalRaw;
   analysis?: AnalysisForPolicy;
   profile?: PolicyProfileT;
+  decisionAccount?: Account;
+  voteAccount?: Account;
+  userAddress?: Hex | null;
+  // Backward-compatible shorthand: if supplied, signs both decision blob and vote.
   account?: Account;
 };
 
@@ -69,6 +74,8 @@ export type PipelineResult = {
   extraction_skipped: boolean;
   extraction_error?: string;
   evaluation: PolicyEvaluation | null;
+  decision_blob: SignedDecisionBlob | null;
+  decision_blob_error?: string;
   vote: { envelope: SignedVoteEnvelope; choice: number } | null;
   rationale_md: string;
   pipeline_version: string;
@@ -109,6 +116,7 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
       extraction_skipped: false,
       extraction_error: extractionError,
       evaluation: null,
+      decision_blob: null,
       vote: null,
       rationale_md: buildRationale({ proposal: proposalRef, analysis: null, evaluation: null, extractionError }),
       pipeline_version: PIPELINE_VERSION,
@@ -124,13 +132,37 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
     space: input.proposal.space?.id,
   });
 
-  // Step 3 — sign vote if (a) decision is auto-castable, (b) account provided,
+  // Step 3 — sign a decision blob. This is separate from the Snapshot vote
+  // envelope and commits to the exact evidence + deterministic evaluation.
+  let decisionBlob: SignedDecisionBlob | null = null;
+  let decisionBlobError: string | undefined;
+  const decisionAccount = input.decisionAccount ?? input.account;
+  const choice = decisionToChoice(evaluation.decision);
+  if (decisionAccount) {
+    try {
+      decisionBlob = await signDecisionBlob({
+        account: decisionAccount,
+        userAddress: input.userAddress,
+        proposal: input.proposal,
+        policy: profile,
+        rules,
+        analysis,
+        evaluation,
+        choice,
+        pipelineVersion: PIPELINE_VERSION,
+      });
+    } catch (e) {
+      decisionBlobError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  // Step 4 — sign vote if (a) decision is auto-castable, (b) account provided,
   // (c) we know which space to vote in.
   let vote: PipelineResult['vote'] = null;
-  const choice = decisionToChoice(evaluation.decision);
-  if (input.account && choice !== null && proposalRef.space) {
+  const voteAccount = input.voteAccount ?? input.account;
+  if (voteAccount && choice !== null && proposalRef.space) {
     const envelope = await signVote({
-      account: input.account,
+      account: voteAccount,
       space: proposalRef.space,
       proposalId: input.proposal.id as Hex,
       choice,
@@ -144,6 +176,8 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
     analysis,
     extraction_skipped: extractionSkipped,
     evaluation,
+    decision_blob: decisionBlob,
+    decision_blob_error: decisionBlobError,
     vote,
     rationale_md: buildRationale({ proposal: proposalRef, analysis, evaluation }),
     pipeline_version: PIPELINE_VERSION,

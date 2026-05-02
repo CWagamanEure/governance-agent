@@ -1,5 +1,5 @@
 /**
- * EigenCompute hello-world for the governance-agent project.
+ * EigenCompute backend for the verifiable governance-agent preview.
  *
  * Validates three things on a real EigenCompute deployment before any
  * governance code gets wired in:
@@ -55,8 +55,9 @@ import {
   requireAuth,
   AuthRequiredError,
 } from './auth.js';
-import { userWallet, appWallet } from './wallets.js';
+import { userWallet } from './wallets.js';
 import { compileProfile } from './profile-compiler.js';
+import { buildAttestationReport } from './attestation.js';
 
 const VERSION = '0.1.0';
 const WALLET_PATH = "m/44'/60'/0'/0/0"; // viem default, documented for responses
@@ -240,6 +241,9 @@ app.post('/vote/sign', async (c) => {
   } else {
     return c.json({ error: "body must include 'choice' or 'decision'" }, 400);
   }
+  if (choice === null) {
+    return c.json({ error: 'invalid vote choice' }, 400);
+  }
 
   const reason = typeof body?.reason === 'string' ? body.reason : '';
   const shouldSubmit = body?.submit === true;
@@ -342,20 +346,25 @@ app.post('/pipeline/run', async (c) => {
     if (stored) effectiveProfile = JSON.parse(stored.profile_json);
   }
 
-  let account;
-  if (shouldSign) {
-    try {
-      account = authedAddr ? userWallet(authedAddr as `0x${string}`) : walletAccount();
-    } catch (e: any) {
+  let decisionAccount;
+  let voteAccount;
+  try {
+    decisionAccount = authedAddr ? userWallet(authedAddr as `0x${string}`) : walletAccount();
+    if (shouldSign) voteAccount = decisionAccount;
+  } catch (e: any) {
+    if (shouldSign) {
       return c.json({ error: `cannot sign: ${e.message}` }, 503);
     }
+    console.warn(`[pipeline/run] decision blob unavailable: ${e?.message ?? String(e)}`);
   }
 
   const result = await runPipeline({
     proposal,
     analysis,
     profile: effectiveProfile,
-    account,
+    decisionAccount,
+    voteAccount,
+    userAddress: authedAddr as `0x${string}` | null,
   });
 
   // bigint timestamps in vote envelopes don't JSON-serialize natively
@@ -575,11 +584,14 @@ app.get('/debug/env-keys', (c) => {
 /**
  * GET /debug/jwt
  *
- * Mints a fresh JWT via the EigenCompute attestation flow and returns the
- * raw token plus decoded header/payload. Diagnostic only — share with Eigen
- * support to debug gateway verification failures. Remove before production.
+ * Mints a fresh JWT via the EigenCompute attestation flow and returns the raw
+ * token plus decoded header/payload. Disabled unless ENABLE_DEBUG_JWT=true.
+ * Use only when debugging gateway verification with Eigen support.
  */
 app.get('/debug/jwt', async (c) => {
+  if (process.env.ENABLE_DEBUG_JWT !== 'true') {
+    return c.json({ error: 'debug JWT endpoint disabled' }, 404);
+  }
   const kmsServerURL = process.env.KMS_SERVER_URL;
   const kmsPublicKey = process.env.KMS_PUBLIC_KEY;
   if (!kmsServerURL || !kmsPublicKey) {
@@ -605,19 +617,20 @@ app.get('/debug/jwt', async (c) => {
   }
 });
 
-app.get('/attestation', (c) => {
+app.get('/attestation', async (c) => {
   let walletAddress: string | null = null;
   try {
     walletAddress = walletAccount().address;
   } catch {
     // intentionally ignored — attestation response is useful even without wallet
   }
-  return c.json({
-    status: 'stub',
-    note: 'TDX quote retrieval not yet implemented. Pending EigenCompute runtime API confirmation.',
-    public_env: publicEnv(),
-    wallet_address: walletAddress,
+  const report = await buildAttestationReport({
+    version: VERSION,
+    walletAddress,
+    publicEnv: publicEnv(),
+    audience: c.req.query('audience') ?? 'llm-proxy',
   });
+  return c.json(report);
 });
 
 const port = Number(process.env.PORT ?? 8000);

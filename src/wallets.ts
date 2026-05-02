@@ -44,8 +44,7 @@ export function userWallet(eth_address: `0x${string}` | string): HDAccount {
   const digest = createHash('sha256').update(normalized).digest();
   // Take 4 bytes, mask to 31 bits to stay within a non-hardened index.
   const idx = digest.readUInt32BE(0) & 0x7fffffff;
-  const path = `m/44'/60'/0'/0/${idx}`;
-  return mnemonicToAccount(requireMnemonic(), { path });
+  return mnemonicToAccount(requireMnemonic(), { addressIndex: idx });
 }
 
 export const WALLET_PATHS = { default: DEFAULT_PATH };

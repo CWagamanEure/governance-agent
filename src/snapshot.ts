@@ -106,6 +106,9 @@ export async function signVote(params: SignVoteParams): Promise<SignedVoteEnvelo
   if (!Number.isInteger(params.choice) || params.choice < 1 || params.choice > 1000) {
     throw new Error(`Invalid choice index: ${params.choice}`);
   }
+  if (!params.account.signTypedData) {
+    throw new Error('account does not support EIP-712 typed-data signing');
+  }
 
   const message: VoteMessage = {
     from: params.account.address,

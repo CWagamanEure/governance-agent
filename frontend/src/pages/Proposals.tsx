@@ -87,6 +87,7 @@ function ProposalCard({
   const [pipeline, setPipeline] = useState<PipelineResult | null>(null);
   const [signed, setSigned] = useState<PipelineResult | null>(null);
   const [showRules, setShowRules] = useState(false);
+  const [showDecisionBlob, setShowDecisionBlob] = useState(false);
   const [showEnvelope, setShowEnvelope] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -220,6 +221,27 @@ function ProposalCard({
           </span>
         ) : null}
       </footer>
+
+      {pipeline?.decision_blob && (
+        <div className="prop-envelope">
+          <div className="prop-envelope-head">
+            <span className="tiny muted">
+              Decision blob signed by <code>{pipeline.decision_blob.signature.address}</code>{' '}
+              ({pipeline.decision_blob.verification.recovered ? 'verified' : 'not verified'})
+            </span>
+            <button className="link-btn" onClick={() => setShowDecisionBlob((v) => !v)}>
+              {showDecisionBlob ? 'hide blob' : 'show blob'}
+            </button>
+          </div>
+          {showDecisionBlob && (
+            <pre className="envelope-pre">{JSON.stringify(pipeline.decision_blob, null, 2)}</pre>
+          )}
+        </div>
+      )}
+
+      {pipeline?.decision_blob_error && (
+        <p className="muted tiny">Decision blob unavailable: {pipeline.decision_blob_error}</p>
+      )}
 
       {signed?.vote && (
         <div className="prop-envelope">

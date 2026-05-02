@@ -149,9 +149,18 @@ function comparatorMatches(value: unknown, cmp: Comparator): boolean {
 }
 
 function predicateMatches(pred: Predicate, ctx: EvalContext): boolean {
-  if ('and' in pred) return pred.and.every((p) => predicateMatches(p, ctx));
-  if ('or' in pred) return pred.or.some((p) => predicateMatches(p, ctx));
-  if ('not' in pred) return !predicateMatches(pred.not, ctx);
+  const compound = pred as {
+    and?: Predicate[];
+    or?: Predicate[];
+    not?: Predicate;
+  };
+  if (Array.isArray(compound.and)) {
+    return compound.and.every((p: Predicate) => predicateMatches(p, ctx));
+  }
+  if (Array.isArray(compound.or)) {
+    return compound.or.some((p: Predicate) => predicateMatches(p, ctx));
+  }
+  if (compound.not) return !predicateMatches(compound.not, ctx);
   // PathPredicate — usually one key per object, but AND them if multiple
   for (const [path, cmp] of Object.entries(pred as PathPredicate)) {
     const value = getPath(ctx, path);
