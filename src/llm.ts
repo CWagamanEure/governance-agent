@@ -5,9 +5,13 @@
  * The LLM is a schema-bound translator here, not a decision-maker.
  *
  * Routing:
- *   - In-enclave on EigenCompute: KMS_AUTH_JWT is auto-injected → Eigen proxy
- *     is used, inference drawn from the $500 EigenPreview credit.
- *   - Local dev: fall back to @ai-sdk/anthropic with ANTHROPIC_API_KEY.
+ *   - LLM_PROVIDER=auto: prefer Eigen when KMS auth is injected, otherwise
+ *     fall back to direct Anthropic when ANTHROPIC_API_KEY is set.
+ *   - LLM_PROVIDER=eigen: force Eigen gateway.
+ *   - LLM_PROVIDER=anthropic: force direct Anthropic, useful if the Eigen
+ *     gateway keyset is out of sync for a preview deployment.
+ *   - LLM_PROVIDER=off: disable live LLM calls; fixture-backed demo paths still
+ *     work, and profile compilation uses its heuristic fallback.
  *
  * Both paths produce a LanguageModel the AI SDK's generateObject() accepts.
  */
@@ -118,6 +122,7 @@ export type RouteInfo = {
   route: 'eigen-proxy' | 'anthropic-direct';
   modelId: string;
 };
+type LlmProvider = 'auto' | 'eigen' | 'anthropic' | 'off';
 
 // Sepolia/testnet apps must hit the dev gateway; mainnet apps hit the prod one.
 // The KMS that signs JWTs and the gateway that verifies them must be from the
@@ -135,7 +140,61 @@ function logEigenEnvOnce() {
   console.log('[eigen] KMS_AUTH_JWT:', process.env.KMS_AUTH_JWT ? '(present)' : '(unset)');
 }
 
+function requestedProvider(): LlmProvider {
+  const value = (process.env.LLM_PROVIDER ?? 'auto').trim().toLowerCase();
+  if (value === 'auto' || value === 'eigen' || value === 'anthropic' || value === 'off') {
+    return value;
+  }
+  throw new Error(`Invalid LLM_PROVIDER '${process.env.LLM_PROVIDER}'. Use auto, eigen, anthropic, or off.`);
+}
+
+function anthropicModel(alias: ModelAlias) {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    throw new Error('ANTHROPIC_API_KEY required when LLM_PROVIDER=anthropic');
+  }
+  const modelId = MODEL_IDS[alias].direct;
+  const anthropic = createAnthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  return {
+    model: anthropic(modelId),
+    info: { route: 'anthropic-direct' as const, modelId },
+  };
+}
+
+function eigenModel(alias: ModelAlias) {
+  const hasJwt = !!process.env.KMS_AUTH_JWT;
+  const hasAttest = !!process.env.KMS_SERVER_URL && !!process.env.KMS_PUBLIC_KEY;
+  if (!hasJwt && !hasAttest) {
+    throw new Error('KMS_AUTH_JWT or KMS_SERVER_URL+KMS_PUBLIC_KEY required when LLM_PROVIDER=eigen');
+  }
+  logEigenEnvOnce();
+  const modelId = MODEL_IDS[alias].eigen;
+  const baseURL = process.env.EIGEN_GATEWAY_URL ?? DEFAULT_EIGEN_GATEWAY_URL;
+  const eigenGw = createEigenGateway({
+    baseURL,
+    jwt: process.env.KMS_AUTH_JWT,
+    attestConfig: hasAttest
+      ? {
+          kmsServerURL: process.env.KMS_SERVER_URL!,
+          kmsPublicKey: process.env.KMS_PUBLIC_KEY!,
+          audience: 'llm-proxy',
+        }
+      : undefined,
+    debug: process.env.EIGEN_DEBUG === 'true',
+  });
+  return {
+    model: eigenGw(modelId),
+    info: { route: 'eigen-proxy' as const, modelId },
+  };
+}
+
 export function pickModel(alias: ModelAlias = 'sonnet'): { model: any; info: RouteInfo } {
+  const provider = requestedProvider();
+  if (provider === 'off') {
+    throw new Error('LLM_PROVIDER=off; live LLM calls are disabled for this deployment');
+  }
+  if (provider === 'anthropic') return anthropicModel(alias);
+  if (provider === 'eigen') return eigenModel(alias);
+
   // Eigen gateway can authenticate in two modes:
   //   (a) direct JWT via KMS_AUTH_JWT
   //   (b) attestation → JWT exchange via KMS_SERVER_URL + KMS_PUBLIC_KEY
@@ -143,37 +202,10 @@ export function pickModel(alias: ModelAlias = 'sonnet'): { model: any; info: Rou
   const hasJwt = !!process.env.KMS_AUTH_JWT;
   const hasAttest = !!process.env.KMS_SERVER_URL && !!process.env.KMS_PUBLIC_KEY;
 
-  if (hasJwt || hasAttest) {
-    logEigenEnvOnce();
-    const modelId = MODEL_IDS[alias].eigen;
-    const baseURL = process.env.EIGEN_GATEWAY_URL ?? DEFAULT_EIGEN_GATEWAY_URL;
-    const eigenGw = createEigenGateway({
-      baseURL,
-      jwt: process.env.KMS_AUTH_JWT,
-      attestConfig: hasAttest
-        ? {
-            kmsServerURL: process.env.KMS_SERVER_URL!,
-            kmsPublicKey: process.env.KMS_PUBLIC_KEY!,
-            audience: 'llm-proxy',
-          }
-        : undefined,
-      debug: process.env.EIGEN_DEBUG === 'true',
-    });
-    return {
-      model: eigenGw(modelId),
-      info: { route: 'eigen-proxy', modelId },
-    };
-  }
-  if (process.env.ANTHROPIC_API_KEY) {
-    const modelId = MODEL_IDS[alias].direct;
-    const anthropic = createAnthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    return {
-      model: anthropic(modelId),
-      info: { route: 'anthropic-direct', modelId },
-    };
-  }
+  if (hasJwt || hasAttest) return eigenModel(alias);
+  if (process.env.ANTHROPIC_API_KEY) return anthropicModel(alias);
   throw new Error(
-    'No LLM credentials: set KMS_AUTH_JWT or KMS_SERVER_URL+KMS_PUBLIC_KEY (in-enclave), or ANTHROPIC_API_KEY (local).',
+    'No LLM credentials: set KMS_AUTH_JWT or KMS_SERVER_URL+KMS_PUBLIC_KEY, set ANTHROPIC_API_KEY, or use LLM_PROVIDER=off for fixture-backed preview.',
   );
 }
 
