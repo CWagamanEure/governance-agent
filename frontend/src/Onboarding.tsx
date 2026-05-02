@@ -3,7 +3,7 @@
  *
  *   1. Values     — user writes 3-5 sentences in plain language
  *   2. Calibration — vote on real past proposals; mark personal-not-policy
- *   3. Review     — LLM-compiled PolicyProfile shown for accept / re-do
+ *   3. Review     — compiled defaults, flags, delegation, and hard limits
  *
  * The deterministic policy engine still owns voting decisions. The LLM only
  * shapes the policy at setup time; user reviews and approves before save.
@@ -28,7 +28,7 @@ type CalEntry = {
 const VALUE_EXAMPLES = [
   'I care about funding upstream Ethereum infrastructure, even when it benefits other chains.',
   "I'm skeptical of recurring delegate compensation programs without clear KPIs.",
-  'I want this DAO to feel community-run, not corporate.',
+  'On technical parameter changes, I want to follow l2beat.eth unless they have not voted.',
   'I prefer reversible decisions over irreversible ones.',
   "I'd rather see milestone-gated grants than lump-sum disbursements.",
 ];
@@ -347,13 +347,6 @@ function CalibrationCard({
 // Step 3 — Review
 // ---------------------------------------------------------------------------
 
-const AXIS_LABELS: Record<string, string> = {
-  treasury_conservatism: 'Treasury conservatism',
-  decentralization_priority: 'Decentralization priority',
-  growth_vs_sustainability: 'Sustainability bias',
-  protocol_risk_tolerance: 'Risk-aversion',
-};
-
 function ReviewStep({
   profile,
   source,
@@ -400,34 +393,43 @@ function ReviewStep({
       </div>
 
       <div className="review-section">
-        <div className="dft-label">Inferred axes</div>
-        <div className="axes" style={{ marginTop: 4 }}>
-          {Object.entries(AXIS_LABELS).map(([k, label]) => (
-            <div key={k} className="axis-row">
-              <span className="axis-label">{label}</span>
-              <div className="axis-bar">
-                {[1, 2, 3, 4, 5].map((i) => (
-                  <span
-                    key={i}
-                    className={`axis-pip ${i <= Number(profile[k]) ? 'on' : ''}`}
-                  />
-                ))}
+        <div className="dft-label">Routine defaults</div>
+        {(profile.category_defaults ?? []).length === 0 ? (
+          <p className="muted tiny">No routine defaults. Unmatched proposals use {profile.default_action ?? 'ABSTAIN'}.</p>
+        ) : (
+          <div className="rules-list" style={{ marginTop: 8 }}>
+            {(profile.category_defaults as any[]).map((d, i) => (
+              <div key={`${d.category}-${i}`} className="rule">
+                <span className="id">{d.category}</span>
+                <span className="reason">— {d.action}</span>
+                {d.max_treasury_usd != null && (
+                  <span className="contrib"> under ${Number(d.max_treasury_usd).toLocaleString()}</span>
+                )}
+                {(d.require_milestones || d.require_reporting) && (
+                  <span className="contrib">
+                    {d.require_milestones ? ' milestones' : ''}
+                    {d.require_reporting ? ' reporting' : ''}
+                  </span>
+                )}
               </div>
-              <span className="axis-num">{profile[k]}/5</span>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="review-section">
         <div className="dft-label">Hard limits</div>
         <div className="profile-meta" style={{ marginTop: 6 }}>
           <div>
-            <span className="muted tiny">Auto-approve treasury cap</span>
+            <span className="muted tiny">Default action</span>
+            <div className="profile-meta-val">{profile.default_action ?? 'ABSTAIN'}</div>
+          </div>
+          <div>
+            <span className="muted tiny">Large treasury review</span>
             <div className="profile-meta-val">
-              {profile.max_treasury_usd_auto == null
+              {profile.large_treasury_usd == null
                 ? '—'
-                : `$${Number(profile.max_treasury_usd_auto).toLocaleString()}`}
+                : `$${Number(profile.large_treasury_usd).toLocaleString()}`}
             </div>
           </div>
           <div>
@@ -449,6 +451,28 @@ function ReviewStep({
           </div>
         </div>
       </div>
+
+      <div className="review-section">
+        <div className="dft-label">Manual review flags</div>
+        <p className="tiny muted" style={{ fontFamily: 'var(--mono)', lineHeight: 1.8 }}>
+          {(profile.manual_review_flags ?? []).join(' · ') || 'none'}
+        </p>
+      </div>
+
+      {(profile.delegation_rules ?? []).length > 0 && (
+        <div className="review-section">
+          <div className="dft-label">Delegation</div>
+          <div className="rules-list" style={{ marginTop: 8 }}>
+            {(profile.delegation_rules as any[]).map((d, i) => (
+              <div key={`${d.category}-${d.delegate}-${i}`} className="rule">
+                <span className="id">{d.category}</span>
+                <span className="reason">— follow {d.delegate}</span>
+                <span className="contrib"> fallback {d.fallback}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="onboarding-actions">
         <button className="btn" onClick={onBackToValues} disabled={submitting}>

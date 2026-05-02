@@ -98,7 +98,7 @@ function HowItWorks() {
         <Step
           num="1"
           title="Set your policy"
-          body="Answer a few questions — treasury caps, decentralization preference, which categories you always want to review yourself. Your answers compile into a deterministic, versioned rule set that anyone can read in our public source."
+          body="Answer a few questions — routine category defaults, manual-review flags, delegation preferences, and hard treasury limits. Your answers compile into a deterministic, versioned rule set that anyone can read in our public source."
         />
         <Step
           num="2"

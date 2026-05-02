@@ -148,7 +148,6 @@ function ProposalCard({
 
   const decision = pipeline?.evaluation?.decision;
   const conf = pipeline?.evaluation?.confidence ?? 0;
-  const margin = pipeline?.evaluation?.margin ?? 0;
   const triggered = pipeline?.evaluation?.triggered_rules ?? [];
 
   return (
@@ -175,7 +174,7 @@ function ProposalCard({
             <div className="big-decision-label">Recommendation</div>
             <div className="big-decision-value">{decision.replace('_', ' ')}</div>
             <div className="big-decision-meta">
-              {Math.round(conf * 100)}% confidence · margin {margin.toFixed(2)}
+              {Math.round(conf * 100)}% confidence · {triggered.length} rule{triggered.length === 1 ? '' : 's'}
             </div>
           </div>
 

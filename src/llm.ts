@@ -46,48 +46,105 @@ export const Tradeoff = z.object({
   con: z.string().max(300),
 });
 
-export const Flags = z.object({
+export const ProposerType = z.enum([
+  'FOUNDATION',
+  'CORE_TEAM',
+  'DELEGATE',
+  'COMMUNITY_MEMBER',
+  'SERVICE_PROVIDER',
+  'ANONYMOUS',
+  'UNKNOWN',
+]);
+
+export const BeneficiaryScope = z.enum([
+  'BROAD_ECOSYSTEM',
+  'TOKEN_HOLDERS',
+  'END_USERS',
+  'SPECIFIC_TEAM',
+  'INSIDERS',
+  'UNKNOWN',
+]);
+
+export const ChangeDirection = z.enum(['INCREASE', 'DECREASE', 'NONE', 'UNKNOWN']);
+
+export const Proposer = z.object({
+  address: z.string().nullable(),
+  name: z.string().nullable(),
+  type: ProposerType,
+  known_delegate: z.boolean().nullable(),
+});
+
+export const Financial = z.object({
   treasury_spend_usd: z
     .number()
     .nullable()
     .describe(
       'USD value being spent from the treasury, if explicitly stated OR convertible from stated token amounts + a price stated in the proposal. Null if unknown. NEVER invent a number.',
     ),
+  treasury_percent: z
+    .number()
+    .nullable()
+    .describe('Percent of total DAO treasury being requested, if explicit in the proposal. Null if not stated.'),
+  recurring_payment: z.boolean(),
+  payment_stream: z.boolean(),
+  recipient_count: z
+    .number()
+    .int()
+    .min(0)
+    .nullable()
+    .describe('Number of distinct fund recipients if knowable from the proposal. Null if unclear.'),
+  single_recipient: z.boolean().nullable(),
+});
+
+export const Execution = z.object({
   requires_contract_upgrade: z.boolean(),
   touches_ownership: z.boolean(),
+  changes_permissions: z.boolean(),
+  creates_or_extends_council: z.boolean(),
   has_milestones: z.boolean().describe('Are there measurable milestones or KPIs tied to disbursement?'),
+  has_reporting: z.boolean(),
+  has_clawback: z.boolean(),
   reversible: z
     .boolean()
     .describe('Can this be reversed by a future proposal without significant cost or permanent damage?'),
   time_sensitive: z.boolean(),
 });
 
-export const ValueAlignment = z.object({
-  decentralization: z
-    .number()
-    .min(-1)
-    .max(1)
-    .describe('Does this increase (+) or decrease (-) decentralization? Range -1 to +1.'),
-  treasury_conservatism: z
-    .number()
-    .min(-1)
-    .max(1)
-    .describe('Is this conservative (+) or aggressive (-) with treasury assets? Range -1 to +1.'),
-  growth_vs_sustainability: z
-    .number()
-    .min(-1)
-    .max(1)
-    .describe('Does this favor long-term sustainability (+) or short-term growth (-)? Range -1 to +1.'),
-  protocol_risk: z
-    .number()
-    .min(-1)
-    .max(1)
-    .describe('Does this decrease (+) or increase (-) protocol risk? Range -1 to +1.'),
+export const Economics = z.object({
+  emissions_change: ChangeDirection,
+  fee_change: ChangeDirection,
+  parameter_change: z.boolean(),
+});
+
+export const Governance = z.object({
+  constitutional_change: z.boolean(),
+  changes_voting_power: z.boolean(),
+  delegation_or_incentive_program: z.boolean(),
+});
+
+export const Beneficiaries = z.object({
+  primary_scope: BeneficiaryScope,
+  named_recipients: z.array(z.string()).max(20),
+  unclear_beneficiaries: z.boolean(),
 });
 
 export const Uncertainty = z.object({
   requires_human_judgment: z.boolean(),
   ambiguity_notes: z.string().max(500).default(''),
+  low_confidence_fields: z.array(z.string()).max(20),
+  field_confidence: z
+    .record(z.number().min(0).max(1))
+    .describe('Per-field confidence keyed by paths such as category, financial.treasury_spend_usd, execution.requires_contract_upgrade. Use 0..1.'),
+});
+
+export const DelegateSignal = z.object({
+  delegate: z.string(),
+  choice: z.enum(['FOR', 'AGAINST', 'ABSTAIN']).nullable(),
+  voted_at: z.number().nullable(),
+});
+
+export const ExternalSignals = z.object({
+  delegate_votes: z.array(DelegateSignal).max(20),
 });
 
 export const ProposalAnalysis = z.object({
@@ -98,8 +155,13 @@ export const ProposalAnalysis = z.object({
     .describe('One paragraph stating what the proposal does. No opinion, no argument for or against.'),
   tradeoffs: z.array(Tradeoff).max(5),
   affected_parties: z.array(z.string()).max(10),
-  flags: Flags,
-  value_alignment: ValueAlignment,
+  proposer: Proposer,
+  financial: Financial,
+  execution: Execution,
+  economics: Economics,
+  governance: Governance,
+  beneficiaries: Beneficiaries,
+  signals: ExternalSignals,
   uncertainty: Uncertainty,
 });
 
@@ -227,10 +289,14 @@ function buildPrompt(p: {
 Hard rules:
 - Categorize into exactly one enum value.
 - treasury_spend_usd: set ONLY if the proposal explicitly states a dollar amount OR a token amount with a price conversion stated in the proposal. If you would have to guess, set to null and note it in uncertainty.ambiguity_notes. Never invent numbers.
-- value_alignment axes are OBJECTIVE assessments of the proposal's direction, not personal preference.
+- treasury_percent: set ONLY if the proposal explicitly states what percent of treasury is being requested. Never infer from outside prices or treasury size.
+- proposer.type and beneficiaries.primary_scope must be based on proposal text. Use UNKNOWN when unsupported.
+- recipient_count and single_recipient must be null when the recipients are unclear.
+- signals.delegate_votes is external evidence, not proposal text. Return [] unless delegate votes were explicitly included in the input.
+- uncertainty.field_confidence must include at least: category, proposer.type, financial.treasury_spend_usd, financial.recipient_count, execution.requires_contract_upgrade, execution.reversible, governance.constitutional_change, beneficiaries.primary_scope.
 - summary: state what the proposal does. Do not argue for or against it.
 - Never add information not supported by the proposal text.
-- If you cannot confidently determine a boolean flag, set uncertainty.requires_human_judgment=true and explain in ambiguity_notes.
+- If a material field is unclear, set its confidence below 0.75, include it in low_confidence_fields, set uncertainty.requires_human_judgment=true, and explain in ambiguity_notes.
 
 PROPOSAL
 

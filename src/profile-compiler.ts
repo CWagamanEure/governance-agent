@@ -40,13 +40,13 @@ The user has provided plain-text values and a set of calibration votes on real p
 
 Hard rules:
 - Each entry in stated_values must be one declarative sentence in the user's own voice, paraphrased only as needed for clarity. Do not invent values they didn't express.
-- Axes are 1..5 integers. Default to 3 (neutral) when the user is silent on that axis.
-  - treasury_conservatism: 5 = very conservative, 1 = spend freely
-  - decentralization_priority: 5 = prioritize decentralization, 1 = centralization is OK
-  - growth_vs_sustainability: 5 = sustainability/long-term, 1 = aggressive growth
-  - protocol_risk_tolerance: 5 = risk-averse, 1 = risk-tolerant
-- max_treasury_usd_auto: a USD number (or null). Default 500000 unless the user expresses a clear cap.
-- manual_review_categories: include CONTRACT_UPGRADE and OWNERSHIP_TRANSFER by default. Add others if the user clearly wants to review them.
+- Use concrete governance policy primitives, not abstract value scores.
+- default_action should normally be ABSTAIN unless the user clearly wants MANUAL_REVIEW by default.
+- category_defaults are routine autopilot rules. Use FOR only for low-stakes categories with clear safeguards such as max_treasury_usd, require_milestones, or require_reporting.
+- manual_review_categories should include CONTRACT_UPGRADE and OWNERSHIP_TRANSFER by default. Add TOKENOMICS, TREASURY_SPEND, META_GOVERNANCE, or PARTNERSHIP if the user is cautious about them.
+- manual_review_flags should include LOW_CONFIDENCE_EXTRACTION. Add flags that match the user's concerns.
+- delegation_rules encode "follow delegate X on category Y". Use fallback MANUAL_REVIEW unless the user explicitly wants abstain/category default.
+- hard_rules encode simple global limits: large single-recipient treasury caps, emission increase preference, and whether treasury spends need milestones.
 - author_blocklist: empty unless the user named specific addresses.
 
 Calibration votes that are marked "personal_not_policy" are excluded — only generalize from the rest.`;
@@ -120,6 +120,7 @@ function fallbackCompile(input: CompileInput): PolicyProfileT {
     /conservativ|skeptic|carefully|cautious|recurring spend|measurable|milestone/.test(text);
   const wantsGrowth = /aggressive|growth|move fast|ship/.test(text);
   const riskAverse = /risk.?averse|safe|reversible/.test(text);
+  const wantsDelegation = /follow|delegate|l2beat|vitalik|expert/.test(text);
 
   const policyVotes = input.calibration.filter((c) => !c.personal_not_policy);
   const totalVotes = policyVotes.length;
@@ -127,20 +128,74 @@ function fallbackCompile(input: CompileInput): PolicyProfileT {
     ? policyVotes.filter((c) => c.user_choice === 'AGAINST').length / totalVotes
     : 0;
 
-  // Conservative if user said so OR votes AGAINST > 40% of the time.
-  const conservatism = isConservative || againstRate > 0.4 ? 4 : wantsGrowth ? 2 : 3;
-  const decentralization = hasDecent ? 5 : dislikesCent ? 4 : 3;
-  const sustainability = wantsSustain ? 4 : wantsGrowth ? 2 : 3;
-  const riskTolerance = riskAverse ? 4 : wantsGrowth ? 2 : 3;
+  const cautious = isConservative || riskAverse || againstRate > 0.4;
+  const grantCap = cautious ? 50_000 : wantsGrowth ? 250_000 : 100_000;
+  const largeTreasury = cautious ? 100_000 : wantsGrowth ? 2_000_000 : 500_000;
 
   return {
-    treasury_conservatism: conservatism,
-    decentralization_priority: decentralization,
-    growth_vs_sustainability: sustainability,
-    protocol_risk_tolerance: riskTolerance,
-    max_treasury_usd_auto: 500_000,
+    schema_version: 'policy-v2',
+    default_action: cautious ? 'MANUAL_REVIEW' : 'ABSTAIN',
+    category_defaults: [
+      {
+        category: 'GRANT',
+        action: cautious ? 'MANUAL_REVIEW' : 'FOR',
+        max_treasury_usd: grantCap,
+        require_milestones: true,
+        require_reporting: !wantsGrowth,
+        proposer_types: [],
+        reason: cautious
+          ? 'review grants unless they are explicitly approved later'
+          : `routine grant under $${grantCap.toLocaleString()} with accountability`,
+      },
+      ...(wantsGrowth
+        ? [
+            {
+              category: 'PARTNERSHIP' as const,
+              action: 'FOR' as const,
+              max_treasury_usd: 100_000,
+              require_milestones: false,
+              require_reporting: true,
+              proposer_types: ['FOUNDATION' as const, 'CORE_TEAM' as const, 'DELEGATE' as const],
+              reason: 'support accountable growth partnerships from known actors',
+            },
+          ]
+        : []),
+    ],
+    manual_review_categories: [
+      'CONTRACT_UPGRADE',
+      'OWNERSHIP_TRANSFER',
+      ...(cautious ? (['TOKENOMICS', 'TREASURY_SPEND'] as const) : []),
+    ],
+    manual_review_flags: [
+      'LOW_CONFIDENCE_EXTRACTION',
+      'UNKNOWN_TREASURY_AMOUNT',
+      'LARGE_TREASURY_SPEND',
+      'CONTRACT_UPGRADE',
+      'OWNERSHIP_OR_PERMISSION_CHANGE',
+      'CONSTITUTIONAL_CHANGE',
+      'UNCLEAR_BENEFICIARIES',
+      'UNKNOWN_RECIPIENT',
+      ...(cautious ? (['SINGLE_RECIPIENT_TREASURY', 'NO_MILESTONES'] as const) : []),
+    ],
+    large_treasury_usd: largeTreasury,
     author_blocklist: [],
-    manual_review_categories: ['CONTRACT_UPGRADE', 'OWNERSHIP_TRANSFER'],
+    delegation_rules: wantsDelegation
+      ? [
+          {
+            category: 'PARAMETER_CHANGE',
+            delegate: /l2beat/.test(text) ? 'l2beat.eth' : /vitalik/.test(text) ? 'vitalik.eth' : 'trusted-delegate.eth',
+            fallback: 'MANUAL_REVIEW',
+            wait_until_hours_before_end: 6,
+          },
+        ]
+      : [],
+    hard_rules: {
+      max_single_recipient_treasury_percent: cautious ? 0.25 : 0.5,
+      max_single_recipient_treasury_usd: cautious ? 100_000 : 250_000,
+      vote_against_emission_increases: !wantsGrowth,
+      vote_for_emission_cuts: wantsSustain || hasDecent || dislikesCent,
+      require_milestones_for_treasury: true,
+    },
     stated_values: stated,
   };
 }

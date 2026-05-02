@@ -59,7 +59,7 @@ import { userWallet } from './wallets.js';
 import { compileProfile } from './profile-compiler.js';
 import { buildAttestationReport } from './attestation.js';
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 const WALLET_PATH = "m/44'/60'/0'/0/0"; // viem default, documented for responses
 
 function walletAccount() {

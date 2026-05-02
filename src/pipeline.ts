@@ -81,7 +81,7 @@ export type PipelineResult = {
   pipeline_version: string;
 };
 
-export const PIPELINE_VERSION = '0.1.0';
+export const PIPELINE_VERSION = '0.2.0';
 
 // ---------------------------------------------------------------------------
 // Orchestrator
@@ -234,20 +234,37 @@ function buildRationale(args: {
   }
 
   md.push('');
-  md.push('## Flags');
-  const f = args.analysis.flags;
+  md.push('## Extracted features');
+  const financial = args.analysis.financial;
+  const execution = args.analysis.execution;
+  const governance = args.analysis.governance;
+  const beneficiaries = args.analysis.beneficiaries;
   md.push(`- Category: \`${args.analysis.category}\``);
-  if (f.treasury_spend_usd != null) md.push(`- Treasury spend: $${f.treasury_spend_usd.toLocaleString()}`);
-  md.push(`- Has milestones: ${f.has_milestones}`);
-  md.push(`- Reversible: ${f.reversible}`);
-  md.push(`- Time sensitive: ${f.time_sensitive}`);
-  md.push(`- Requires contract upgrade: ${f.requires_contract_upgrade}`);
-  md.push(`- Touches ownership: ${f.touches_ownership}`);
+  md.push(`- Proposer type: \`${args.analysis.proposer.type}\``);
+  if (financial.treasury_spend_usd != null) {
+    md.push(`- Treasury spend: $${financial.treasury_spend_usd.toLocaleString()}`);
+  }
+  if (financial.treasury_percent != null) {
+    md.push(`- Treasury percent: ${financial.treasury_percent}%`);
+  }
+  md.push(`- Recipient count: ${financial.recipient_count ?? 'unknown'}`);
+  md.push(`- Beneficiary scope: \`${beneficiaries.primary_scope}\``);
+  md.push(`- Has milestones: ${execution.has_milestones}`);
+  md.push(`- Has reporting: ${execution.has_reporting}`);
+  md.push(`- Reversible: ${execution.reversible}`);
+  md.push(`- Time sensitive: ${execution.time_sensitive}`);
+  md.push(`- Requires contract upgrade: ${execution.requires_contract_upgrade}`);
+  md.push(`- Changes permissions: ${execution.changes_permissions}`);
+  md.push(`- Constitutional change: ${governance.constitutional_change}`);
+  md.push(`- Emissions change: \`${args.analysis.economics.emissions_change}\``);
 
   if (args.analysis.uncertainty.requires_human_judgment) {
     md.push('');
     md.push('## LLM uncertainty flag');
     md.push(`The LLM extracted this proposal with low confidence: ${args.analysis.uncertainty.ambiguity_notes || '(no notes)'}`);
+    if (args.analysis.uncertainty.low_confidence_fields.length > 0) {
+      md.push(`Low-confidence fields: ${args.analysis.uncertainty.low_confidence_fields.map((f) => `\`${f}\``).join(', ')}`);
+    }
   }
 
   if (!args.evaluation) {
@@ -259,7 +276,6 @@ function buildRationale(args: {
   md.push(`## Decision: **${e.decision}**`);
   md.push(`- Confidence: ${(e.confidence * 100).toFixed(0)}%`);
   md.push(`- Engine version: \`${e.engine_version}\``);
-  md.push(`- Scores: FOR=${e.scores.FOR.toFixed(1)}, AGAINST=${e.scores.AGAINST.toFixed(1)}, margin=${e.margin.toFixed(2)}`);
 
   md.push('');
   md.push('### Triggered rules');

@@ -110,7 +110,7 @@ async function main() {
     writeFileSync(outPath, JSON.stringify(record, null, 2) + '\n');
 
     const extras: string[] = [];
-    const spend = result.analysis.flags.treasury_spend_usd;
+    const spend = result.analysis.financial.treasury_spend_usd;
     if (spend !== null) extras.push(`$${Number(spend).toLocaleString()}`);
     if (result.analysis.uncertainty.requires_human_judgment) extras.push('HUMAN_JUDGMENT');
     const extraStr = extras.length > 0 ? `  [${extras.join(' | ')}]` : '';

@@ -3,157 +3,222 @@
  *
  * No test framework dep — this is a script that throws if any case fails.
  * Run with `npm run test:policy`.
- *
- * Each case is a (profile, analysis, expected-decision) triple. Analyses are
- * hand-written to probe specific rule paths. Once the real extraction pipeline
- * is producing analyses in data/analyses/, we can point this at those too.
  */
 
 import {
   evaluate,
   compileProfileToRules,
   DEFAULT_PROFILE,
-  CONSERVATIVE_PROFILE,
   GROWTH_PROFILE,
   type PolicyProfileT,
   type AnalysisForPolicy,
   type Decision,
 } from '../src/policy.js';
 
-// ---------------------------------------------------------------------------
-// Hand-built analyses — each probes a specific rule path.
-// ---------------------------------------------------------------------------
-
-const A_TREASURY_NO_MILESTONES: AnalysisForPolicy = {
-  category: 'TREASURY_SPEND',
-  summary: '$750k to Protocol Guild, 6 months, no milestones',
-  tradeoffs: [{ pro: 'supports infra', con: 'no performance gate' }],
-  affected_parties: ['treasury', 'PG'],
-  flags: {
-    treasury_spend_usd: 750_000,
-    requires_contract_upgrade: false,
-    touches_ownership: false,
-    has_milestones: false,
-    reversible: false,
-    time_sensitive: false,
-  },
-  value_alignment: {
-    decentralization: 0.3,
-    treasury_conservatism: -0.6,
-    growth_vs_sustainability: 0.0,
-    protocol_risk: 0.0,
-  },
-  uncertainty: { requires_human_judgment: false, ambiguity_notes: '' },
-  extraction_confidence: 0.9,
+const FIELD_CONFIDENCE = {
+  category: 0.95,
+  'proposer.type': 0.95,
+  'financial.treasury_spend_usd': 0.95,
+  'financial.recipient_count': 0.95,
+  'execution.requires_contract_upgrade': 0.95,
+  'execution.reversible': 0.95,
+  'governance.constitutional_change': 0.95,
+  'beneficiaries.primary_scope': 0.95,
 };
 
-const A_TREASURY_SMALL_OK: AnalysisForPolicy = {
-  category: 'TREASURY_SPEND',
-  summary: 'Small research grant, $50k, milestones',
-  tradeoffs: [],
-  affected_parties: ['research team'],
-  flags: {
-    treasury_spend_usd: 50_000,
+const A_ROUTINE_GRANT: AnalysisForPolicy = {
+  category: 'GRANT',
+  summary: 'Milestone-gated ecosystem grant under the default auto-vote cap.',
+  tradeoffs: [{ pro: 'funds useful ecosystem work', con: 'uses treasury funds' }],
+  affected_parties: ['grant recipient', 'DAO treasury'],
+  proposer: {
+    address: '0x1111111111111111111111111111111111111111',
+    name: 'Known delegate',
+    type: 'DELEGATE',
+    known_delegate: true,
+  },
+  financial: {
+    treasury_spend_usd: 75_000,
+    treasury_percent: 0.05,
+    recurring_payment: false,
+    payment_stream: false,
+    recipient_count: 3,
+    single_recipient: false,
+  },
+  execution: {
     requires_contract_upgrade: false,
     touches_ownership: false,
+    changes_permissions: false,
+    creates_or_extends_council: false,
     has_milestones: true,
+    has_reporting: true,
+    has_clawback: false,
     reversible: true,
     time_sensitive: false,
   },
-  value_alignment: {
-    decentralization: 0.2,
-    treasury_conservatism: 0.1,
-    growth_vs_sustainability: 0.2,
-    protocol_risk: 0.1,
+  economics: {
+    emissions_change: 'NONE',
+    fee_change: 'NONE',
+    parameter_change: false,
   },
-  uncertainty: { requires_human_judgment: false, ambiguity_notes: '' },
+  governance: {
+    constitutional_change: false,
+    changes_voting_power: false,
+    delegation_or_incentive_program: false,
+  },
+  beneficiaries: {
+    primary_scope: 'BROAD_ECOSYSTEM',
+    named_recipients: ['recipient cohort'],
+    unclear_beneficiaries: false,
+  },
+  signals: { delegate_votes: [] },
+  uncertainty: {
+    requires_human_judgment: false,
+    ambiguity_notes: '',
+    low_confidence_fields: [],
+    field_confidence: FIELD_CONFIDENCE,
+  },
   extraction_confidence: 0.95,
 };
 
 const A_CONTRACT_UPGRADE: AnalysisForPolicy = {
+  ...A_ROUTINE_GRANT,
   category: 'CONTRACT_UPGRADE',
-  summary: 'Upgrade StakingPool to v2',
-  tradeoffs: [],
-  affected_parties: ['stakers'],
-  flags: {
+  summary: 'Upgrade core protocol contracts.',
+  financial: {
+    ...A_ROUTINE_GRANT.financial,
     treasury_spend_usd: null,
+    treasury_percent: null,
+    recipient_count: null,
+    single_recipient: null,
+  },
+  execution: {
+    ...A_ROUTINE_GRANT.execution,
     requires_contract_upgrade: true,
-    touches_ownership: false,
-    has_milestones: false,
     reversible: false,
-    time_sensitive: false,
   },
-  value_alignment: {
-    decentralization: 0,
-    treasury_conservatism: 0,
-    growth_vs_sustainability: 0,
-    protocol_risk: -0.2,
-  },
-  uncertainty: { requires_human_judgment: false, ambiguity_notes: '' },
-  extraction_confidence: 0.9,
 };
 
-// Small spend so it doesn't also trip the personal_treasury_cap rule.
-// We want to isolate the low_conf_guard rule path.
+const A_LARGE_TREASURY: AnalysisForPolicy = {
+  ...A_ROUTINE_GRANT,
+  category: 'TREASURY_SPEND',
+  summary: 'Large treasury spend with milestones.',
+  financial: {
+    ...A_ROUTINE_GRANT.financial,
+    treasury_spend_usd: 750_000,
+    treasury_percent: 0.4,
+    recipient_count: 4,
+    single_recipient: false,
+  },
+};
+
+const A_SINGLE_RECIPIENT_OVER_CAP: AnalysisForPolicy = {
+  ...A_ROUTINE_GRANT,
+  category: 'GRANT',
+  summary: 'Single-recipient grant over the hard cap but below large-review threshold.',
+  financial: {
+    ...A_ROUTINE_GRANT.financial,
+    treasury_spend_usd: 300_000,
+    treasury_percent: 0.2,
+    recipient_count: 1,
+    single_recipient: true,
+  },
+};
+
+const A_NO_MILESTONES: AnalysisForPolicy = {
+  ...A_ROUTINE_GRANT,
+  execution: {
+    ...A_ROUTINE_GRANT.execution,
+    has_milestones: false,
+  },
+};
+
 const A_LOW_CONFIDENCE: AnalysisForPolicy = {
-  ...A_TREASURY_SMALL_OK,
+  ...A_ROUTINE_GRANT,
   extraction_confidence: 0.5,
 };
 
+const A_LOW_FIELD_CONFIDENCE: AnalysisForPolicy = {
+  ...A_ROUTINE_GRANT,
+  uncertainty: {
+    requires_human_judgment: false,
+    ambiguity_notes: 'recipient count is unclear',
+    low_confidence_fields: ['financial.recipient_count'],
+    field_confidence: {
+      ...FIELD_CONFIDENCE,
+      'financial.recipient_count': 0.4,
+    },
+  },
+};
+
 const A_LLM_FLAGGED: AnalysisForPolicy = {
-  ...A_TREASURY_SMALL_OK,
-  uncertainty: { requires_human_judgment: true, ambiguity_notes: 'conflicting claims in body' },
+  ...A_ROUTINE_GRANT,
+  uncertainty: {
+    ...A_ROUTINE_GRANT.uncertainty,
+    requires_human_judgment: true,
+    ambiguity_notes: 'proposal text contains conflicting recipient claims',
+  },
 };
 
-const A_GRANT_DECENTRALIZED: AnalysisForPolicy = {
-  category: 'GRANT',
-  summary: 'Fund diverse node operator grants, milestones + reversible',
-  tradeoffs: [],
-  affected_parties: ['node operators'],
-  flags: {
-    treasury_spend_usd: 100_000,
-    requires_contract_upgrade: false,
-    touches_ownership: false,
-    has_milestones: true,
-    reversible: true,
-    time_sensitive: false,
-  },
-  value_alignment: {
-    decentralization: 0.8,
-    treasury_conservatism: -0.1,
-    growth_vs_sustainability: 0.3,
-    protocol_risk: 0.1,
-  },
-  uncertainty: { requires_human_judgment: false, ambiguity_notes: '' },
-  extraction_confidence: 0.95,
-};
-
-const A_CENTRALIZING_PARTNERSHIP: AnalysisForPolicy = {
-  category: 'PARTNERSHIP',
-  summary: 'Exclusive deal with a single centralized infra provider',
-  tradeoffs: [],
-  affected_parties: ['users'],
-  flags: {
+const A_EMISSION_INCREASE: AnalysisForPolicy = {
+  ...A_ROUTINE_GRANT,
+  category: 'TOKENOMICS',
+  summary: 'Increase token emissions.',
+  financial: {
+    ...A_ROUTINE_GRANT.financial,
     treasury_spend_usd: null,
-    requires_contract_upgrade: false,
-    touches_ownership: false,
-    has_milestones: false,
-    reversible: true,
-    time_sensitive: false,
+    treasury_percent: null,
   },
-  value_alignment: {
-    decentralization: -0.7,
-    treasury_conservatism: 0.0,
-    growth_vs_sustainability: -0.2,
-    protocol_risk: -0.2,
+  economics: {
+    ...A_ROUTINE_GRANT.economics,
+    emissions_change: 'INCREASE',
   },
-  uncertainty: { requires_human_judgment: false, ambiguity_notes: '' },
-  extraction_confidence: 0.9,
 };
 
-// ---------------------------------------------------------------------------
-// Test cases
-// ---------------------------------------------------------------------------
+const A_PARAMETER_WITH_DELEGATE: AnalysisForPolicy = {
+  ...A_ROUTINE_GRANT,
+  category: 'PARAMETER_CHANGE',
+  summary: 'Routine protocol parameter update.',
+  financial: {
+    ...A_ROUTINE_GRANT.financial,
+    treasury_spend_usd: null,
+    treasury_percent: null,
+  },
+  economics: {
+    ...A_ROUTINE_GRANT.economics,
+    parameter_change: true,
+  },
+  signals: {
+    delegate_votes: [{ delegate: 'l2beat.eth', choice: 'FOR', voted_at: 1777730000 }],
+  },
+};
+
+const A_PARAMETER_WITHOUT_DELEGATE: AnalysisForPolicy = {
+  ...A_PARAMETER_WITH_DELEGATE,
+  signals: { delegate_votes: [] },
+};
+
+const A_DIP_META: AnalysisForPolicy = {
+  ...A_ROUTINE_GRANT,
+  category: 'META_GOVERNANCE',
+  summary: 'Update delegate incentive reporting requirements without changing budget.',
+  financial: {
+    ...A_ROUTINE_GRANT.financial,
+    treasury_spend_usd: null,
+    treasury_percent: null,
+    recipient_count: null,
+    single_recipient: null,
+  },
+  governance: {
+    ...A_ROUTINE_GRANT.governance,
+    delegation_or_incentive_program: true,
+  },
+  beneficiaries: {
+    primary_scope: 'SPECIFIC_TEAM',
+    named_recipients: ['delegates receiving incentives'],
+    unclear_beneficiaries: false,
+  },
+};
 
 type TestCase = {
   name: string;
@@ -161,99 +226,119 @@ type TestCase = {
   analysis: AnalysisForPolicy;
   proposal?: { id: string; author_address?: string };
   expect: Decision;
-  expectRule?: string; // optional: a rule id we expect to appear in triggered_rules
+  expectRule?: string;
 };
 
 const TESTS: TestCase[] = [
   {
-    name: 'blocklisted author → ABSTAIN',
+    name: 'blocklisted author -> ABSTAIN',
     profile: {
       ...DEFAULT_PROFILE,
       author_blocklist: ['0xBAD000000000000000000000000000000000000B'],
-      manual_review_categories: [],
     },
-    analysis: A_GRANT_DECENTRALIZED,
+    analysis: A_ROUTINE_GRANT,
     proposal: { id: 'x', author_address: '0xBAD000000000000000000000000000000000000B' },
     expect: 'ABSTAIN',
     expectRule: 'hard_veto_authors',
   },
   {
-    name: 'contract upgrade with default policy → MANUAL_REVIEW',
+    name: 'contract upgrade with default policy -> MANUAL_REVIEW',
     profile: DEFAULT_PROFILE,
     analysis: A_CONTRACT_UPGRADE,
     expect: 'MANUAL_REVIEW',
     expectRule: 'manual_review_contract_upgrade',
   },
   {
-    name: 'treasury spend over user cap → MANUAL_REVIEW',
-    profile: { ...DEFAULT_PROFILE, max_treasury_usd_auto: 500_000 },
-    analysis: A_TREASURY_NO_MILESTONES,
+    name: 'large treasury spend -> MANUAL_REVIEW',
+    profile: DEFAULT_PROFILE,
+    analysis: A_LARGE_TREASURY,
     expect: 'MANUAL_REVIEW',
-    expectRule: 'personal_treasury_cap',
+    expectRule: 'review_large_treasury_spend',
   },
   {
-    name: 'low extraction confidence → MANUAL_REVIEW',
+    name: 'low extraction confidence -> MANUAL_REVIEW',
     profile: DEFAULT_PROFILE,
     analysis: A_LOW_CONFIDENCE,
     expect: 'MANUAL_REVIEW',
     expectRule: 'low_conf_guard',
   },
   {
-    name: 'LLM flagged ambiguous → MANUAL_REVIEW',
+    name: 'low field confidence -> MANUAL_REVIEW',
+    profile: DEFAULT_PROFILE,
+    analysis: A_LOW_FIELD_CONFIDENCE,
+    expect: 'MANUAL_REVIEW',
+    expectRule: 'low_confidence_policy_inputs',
+  },
+  {
+    name: 'LLM flagged ambiguous -> MANUAL_REVIEW',
     profile: DEFAULT_PROFILE,
     analysis: A_LLM_FLAGGED,
     expect: 'MANUAL_REVIEW',
     expectRule: 'llm_flagged_ambiguous',
   },
   {
-    name: 'aligned decentralized grant + dec-priority profile → FOR',
-    profile: {
-      ...DEFAULT_PROFILE,
-      decentralization_priority: 5,
-      manual_review_categories: [], // keep GRANT out of manual review for this test
-    },
-    analysis: A_GRANT_DECENTRALIZED,
+    name: 'routine accountable grant -> FOR',
+    profile: DEFAULT_PROFILE,
+    analysis: A_ROUTINE_GRANT,
     expect: 'FOR',
-    expectRule: 'prefer_decentralization',
+    expectRule: 'category_default_grant',
   },
   {
-    name: 'centralizing partnership + dec-priority profile → AGAINST',
-    profile: {
-      ...DEFAULT_PROFILE,
-      decentralization_priority: 5,
-      manual_review_categories: [],
-    },
-    analysis: A_CENTRALIZING_PARTNERSHIP,
-    expect: 'AGAINST',
-    expectRule: 'penalize_centralization',
-  },
-  {
-    name: 'conservative profile + big treasury w/o milestones → MANUAL_REVIEW (cap)',
-    profile: CONSERVATIVE_PROFILE,
-    analysis: A_TREASURY_NO_MILESTONES,
+    name: 'treasury grant without milestones -> MANUAL_REVIEW',
+    profile: DEFAULT_PROFILE,
+    analysis: A_NO_MILESTONES,
     expect: 'MANUAL_REVIEW',
-    expectRule: 'personal_treasury_cap',
+    expectRule: 'hard_review_treasury_without_milestones',
   },
   {
-    name: 'growth profile + same proposal → still MANUAL_REVIEW due to default cap',
-    profile: GROWTH_PROFILE,
-    analysis: A_TREASURY_NO_MILESTONES,
-    expect: 'FOR', // $750k < $2M cap, no conservatism rule fires, category not reviewed
-    // No explicit rule id check — this one exercises the soft path.
+    name: 'single-recipient grant over hard cap -> AGAINST',
+    profile: DEFAULT_PROFILE,
+    analysis: A_SINGLE_RECIPIENT_OVER_CAP,
+    expect: 'AGAINST',
+    expectRule: 'hard_against_single_recipient_treasury_usd',
   },
   {
-    name: 'small aligned grant with weak signal + default profile → ABSTAIN (margin guard fires)',
-    profile: { ...DEFAULT_PROFILE, manual_review_categories: [] },
-    analysis: A_TREASURY_SMALL_OK,
-    // Weak-signal profile => margin < 1 => margin_guard → ABSTAIN
+    name: 'emission increase -> AGAINST',
+    profile: DEFAULT_PROFILE,
+    analysis: A_EMISSION_INCREASE,
+    expect: 'AGAINST',
+    expectRule: 'hard_against_emission_increase',
+  },
+  {
+    name: 'parameter change follows delegate signal -> FOR',
+    profile: DEFAULT_PROFILE,
+    analysis: A_PARAMETER_WITH_DELEGATE,
+    expect: 'FOR',
+    expectRule: 'delegate_parameter_change_for',
+  },
+  {
+    name: 'parameter change without delegate signal -> MANUAL_REVIEW',
+    profile: DEFAULT_PROFILE,
+    analysis: A_PARAMETER_WITHOUT_DELEGATE,
+    expect: 'MANUAL_REVIEW',
+    expectRule: 'delegate_parameter_change_unavailable',
+  },
+  {
+    name: 'DIP-style meta governance defaults to ABSTAIN',
+    profile: DEFAULT_PROFILE,
+    analysis: A_DIP_META,
     expect: 'ABSTAIN',
-    expectRule: 'margin_guard',
+    expectRule: 'category_default_meta_governance',
+  },
+  {
+    name: 'growth profile supports accountable partnerships',
+    profile: GROWTH_PROFILE,
+    analysis: {
+      ...A_ROUTINE_GRANT,
+      category: 'PARTNERSHIP',
+      proposer: { ...A_ROUTINE_GRANT.proposer, type: 'CORE_TEAM' },
+      financial: { ...A_ROUTINE_GRANT.financial, treasury_spend_usd: 75_000 },
+      execution: { ...A_ROUTINE_GRANT.execution, has_reporting: true },
+    },
+    expect: 'FOR',
+    expectRule: 'category_default_partnership',
   },
 ];
-
-// ---------------------------------------------------------------------------
-// Runner
-// ---------------------------------------------------------------------------
 
 let passed = 0;
 let failed = 0;
@@ -289,11 +374,7 @@ for (const tc of TESTS) {
     }
   }
 
-  console.log(
-    `    scores FOR=${result.scores.FOR.toFixed(1)} AGAINST=${result.scores.AGAINST.toFixed(
-      1,
-    )} margin=${result.margin.toFixed(2)} conf=${result.confidence.toFixed(2)}`,
-  );
+  console.log(`    conf=${result.confidence.toFixed(2)}`);
   if (result.triggered_rules.length > 0) {
     console.log(`    triggered: ${result.triggered_rules.map((r) => r.id).join(', ')}`);
   }

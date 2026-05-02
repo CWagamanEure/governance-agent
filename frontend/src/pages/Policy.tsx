@@ -57,13 +57,6 @@ export function Policy({
   );
 }
 
-const AXIS_LABELS: Record<string, string> = {
-  treasury_conservatism: 'Treasury conservatism',
-  decentralization_priority: 'Decentralization priority',
-  growth_vs_sustainability: 'Sustainability bias',
-  protocol_risk_tolerance: 'Risk-aversion',
-};
-
 function ProfileCard({
   profile,
   onEdit,
@@ -73,7 +66,7 @@ function ProfileCard({
 }) {
   if (!profile.profile) return null;
   const p = profile.profile.profile_json;
-  const cap = p.max_treasury_usd_auto;
+  const hard = p.hard_rules ?? {};
   return (
     <div className="card profile-card">
       <div className="profile-head">
@@ -99,21 +92,38 @@ function ProfileCard({
         </div>
       )}
 
-      <div className="axes" style={{ marginTop: Array.isArray(p.stated_values) && p.stated_values.length > 0 ? 18 : 0 }}>
-        {Object.entries(AXIS_LABELS).map(([k, label]) => (
-          <AxisBar key={k} label={label} value={Number(p[k])} />
-        ))}
+      <div className="review-section">
+        <div className="dft-label">Routine defaults</div>
+        {(p.category_defaults ?? []).length === 0 ? (
+          <p className="muted tiny">No category defaults. Unmatched proposals use {p.default_action ?? 'ABSTAIN'}.</p>
+        ) : (
+          <div className="rules-list" style={{ marginTop: 8 }}>
+            {(p.category_defaults as any[]).map((d, i) => (
+              <div key={`${d.category}-${i}`} className="rule">
+                <span className="id">{d.category}</span>
+                <span className="reason">— {d.action}</span>
+                {d.max_treasury_usd != null && (
+                  <span className="contrib"> under ${Number(d.max_treasury_usd).toLocaleString()}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="profile-meta">
         <div>
-          <span className="muted tiny">Auto-approve treasury cap</span>
+          <span className="muted tiny">Default action</span>
+          <div className="profile-meta-val">{p.default_action ?? 'ABSTAIN'}</div>
+        </div>
+        <div>
+          <span className="muted tiny">Large treasury review</span>
           <div className="profile-meta-val">
-            {cap == null ? '—' : `$${Number(cap).toLocaleString()}`}
+            {p.large_treasury_usd == null ? '—' : `$${Number(p.large_treasury_usd).toLocaleString()}`}
           </div>
         </div>
         <div>
-          <span className="muted tiny">Always require my review</span>
+          <span className="muted tiny">Manual review categories</span>
           <div className="profile-meta-val">
             {(p.manual_review_categories ?? []).length} categories
           </div>
@@ -125,20 +135,40 @@ function ProfileCard({
           </div>
         </div>
       </div>
-    </div>
-  );
-}
 
-function AxisBar({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="axis-row">
-      <span className="axis-label">{label}</span>
-      <div className="axis-bar">
-        {[1, 2, 3, 4, 5].map((i) => (
-          <span key={i} className={`axis-pip ${i <= value ? 'on' : ''}`} data-v={i} />
-        ))}
+      <div className="review-section">
+        <div className="dft-label">Manual review flags</div>
+        <p className="tiny muted" style={{ fontFamily: 'var(--mono)', lineHeight: 1.8 }}>
+          {(p.manual_review_flags ?? []).join(' · ') || 'none'}
+        </p>
       </div>
-      <span className="axis-num">{value}/5</span>
+
+      {(p.delegation_rules ?? []).length > 0 && (
+        <div className="review-section">
+          <div className="dft-label">Delegation</div>
+          <div className="rules-list" style={{ marginTop: 8 }}>
+            {(p.delegation_rules as any[]).map((d, i) => (
+              <div key={`${d.category}-${d.delegate}-${i}`} className="rule">
+                <span className="id">{d.category}</span>
+                <span className="reason">— follow {d.delegate}</span>
+                <span className="contrib"> fallback {d.fallback}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="review-section">
+        <div className="dft-label">Hard limits</div>
+        <p className="tiny muted">
+          Single recipient cap:{' '}
+          {hard.max_single_recipient_treasury_usd == null
+            ? '—'
+            : `$${Number(hard.max_single_recipient_treasury_usd).toLocaleString()}`}
+          {' · '}
+          Emission increases: {hard.vote_against_emission_increases ? 'AGAINST' : 'allowed by defaults'}
+        </p>
+      </div>
     </div>
   );
 }

@@ -15,7 +15,7 @@ import type { SnapshotProposalRaw } from './pipeline.js';
 
 export const DECISION_BLOB_DOMAIN = {
   name: 'governance-agent-decision',
-  version: '0.1.0',
+  version: '0.2.0',
 } as const;
 
 export const DECISION_BLOB_TYPES = {

@@ -1,27 +1,18 @@
 /**
  * Deterministic policy engine.
  *
- * Takes a user's PolicyProfile + an LLM-produced ProposalAnalysis and emits
- * a structured decision: FOR | AGAINST | ABSTAIN | MANUAL_REVIEW.
+ * The LLM extracts concrete proposal features. This module applies a user's
+ * explicit defaults, manual-review flags, delegation rules, and hard limits.
  *
  * Contract:
- *   - Pure function. Same inputs → same output. No randomness, no I/O, no LLM.
- *   - No import from ../src/llm beyond types — the engine never calls the LLM.
+ *   - Pure function. Same inputs -> same output. No randomness, no I/O, no LLM.
+ *   - The engine treats low-confidence extracted policy inputs as a reason for
+ *     MANUAL_REVIEW, not as permission to guess.
  *   - Every decision carries the list of rules that triggered it.
- *
- * Rule shape:
- *   { id, priority, when: <predicate>, then: { action? | score?, reason } }
- *
- * Resolution order:
- *   1. Hard rules with priority >= 500 evaluated in priority-descending order.
- *      First match short-circuits with its action.
- *   2. Soft rules (those with `score`) accumulated into {FOR, AGAINST, ABSTAIN}.
- *   3. Low-priority hard rules (< 500) evaluated using the computed margin.
- *   4. Winner = highest-score action. Ties → ABSTAIN.
  */
 
 import { z } from 'zod';
-import { Category, type ProposalAnalysisT } from './llm.js';
+import { Category, ProposerType, type ProposalAnalysisT } from './llm.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -29,21 +20,67 @@ import { Category, type ProposalAnalysisT } from './llm.js';
 
 export type Decision = 'FOR' | 'AGAINST' | 'ABSTAIN' | 'MANUAL_REVIEW';
 
+const DecisionSchema = z.enum(['FOR', 'AGAINST', 'ABSTAIN', 'MANUAL_REVIEW']);
+
+export const ManualReviewFlag = z.enum([
+  'LOW_CONFIDENCE_EXTRACTION',
+  'UNKNOWN_TREASURY_AMOUNT',
+  'LARGE_TREASURY_SPEND',
+  'SINGLE_RECIPIENT_TREASURY',
+  'CONTRACT_UPGRADE',
+  'OWNERSHIP_OR_PERMISSION_CHANGE',
+  'CONSTITUTIONAL_CHANGE',
+  'UNCLEAR_BENEFICIARIES',
+  'UNKNOWN_RECIPIENT',
+  'NO_MILESTONES',
+  'DELEGATE_SIGNAL_UNAVAILABLE',
+]);
+export type ManualReviewFlagT = z.infer<typeof ManualReviewFlag>;
+
+export const CategoryDefault = z.object({
+  category: Category,
+  action: DecisionSchema,
+  max_treasury_usd: z.number().nullable().default(null),
+  require_milestones: z.boolean().default(false),
+  require_reporting: z.boolean().default(false),
+  proposer_types: z.array(ProposerType).default([]),
+  reason: z.string().max(240).default('category default'),
+});
+export type CategoryDefaultT = z.infer<typeof CategoryDefault>;
+
+export const DelegationRule = z.object({
+  category: Category,
+  delegate: z.string(),
+  fallback: z.enum(['MANUAL_REVIEW', 'CATEGORY_DEFAULT', 'ABSTAIN']).default('MANUAL_REVIEW'),
+  wait_until_hours_before_end: z.number().min(0).max(168).default(6),
+});
+export type DelegationRuleT = z.infer<typeof DelegationRule>;
+
+export const HardRules = z.object({
+  max_single_recipient_treasury_percent: z.number().min(0).max(100).nullable(),
+  max_single_recipient_treasury_usd: z.number().nullable(),
+  vote_against_emission_increases: z.boolean(),
+  vote_for_emission_cuts: z.boolean(),
+  require_milestones_for_treasury: z.boolean(),
+});
+export type HardRulesT = z.infer<typeof HardRules>;
+
 export const PolicyProfile = z.object({
-  // Axis preferences — 1 (opposite direction) ... 5 (strongly this direction)
-  treasury_conservatism: z.number().int().min(1).max(5),
-  decentralization_priority: z.number().int().min(1).max(5),
-  growth_vs_sustainability: z.number().int().min(1).max(5),
-  protocol_risk_tolerance: z.number().int().min(1).max(5),
-
-  // Hard constraints
-  max_treasury_usd_auto: z.number().nullable(),
-  author_blocklist: z.array(z.string()),
-  manual_review_categories: z.array(Category),
-
-  // Free-text values written by the user during onboarding — kept verbatim so
-  // the user (and any reviewer) can read what they actually said. The LLM may
-  // later use these to score per-user alignment when extracting proposals.
+  schema_version: z.literal('policy-v2').default('policy-v2'),
+  default_action: DecisionSchema.default('ABSTAIN'),
+  category_defaults: z.array(CategoryDefault).default([]),
+  manual_review_categories: z.array(Category).default([]),
+  manual_review_flags: z.array(ManualReviewFlag).default([]),
+  large_treasury_usd: z.number().nullable().default(500_000),
+  author_blocklist: z.array(z.string()).default([]),
+  delegation_rules: z.array(DelegationRule).default([]),
+  hard_rules: HardRules.default({
+    max_single_recipient_treasury_percent: 0.5,
+    max_single_recipient_treasury_usd: 250_000,
+    vote_against_emission_increases: true,
+    vote_for_emission_cuts: false,
+    require_milestones_for_treasury: true,
+  }),
   stated_values: z.array(z.string()).default([]),
 });
 export type PolicyProfileT = z.infer<typeof PolicyProfile>;
@@ -106,9 +143,12 @@ export type PolicyEvaluation = {
 };
 
 type Computed = {
-  score_for: number;
-  score_against: number;
-  score_margin: number;
+  always: boolean;
+  extraction_confidence: number;
+  low_confidence_policy_inputs: boolean;
+  delegate_rule_applies: boolean;
+  delegate_signal_available: boolean;
+  delegate_choice: Decision | '';
 };
 
 type EvalContext = {
@@ -122,9 +162,21 @@ type EvalContext = {
 // Engine
 // ---------------------------------------------------------------------------
 
-export const ENGINE_VERSION = '0.1.0';
+export const ENGINE_VERSION = '0.2.0';
 const HARD_PRIORITY_THRESHOLD = 500;
 const DEFAULT_EXTRACTION_CONFIDENCE = 0.9;
+const LOW_CONFIDENCE_THRESHOLD = 0.75;
+
+const POLICY_INPUT_FIELDS = [
+  'category',
+  'proposer.type',
+  'financial.treasury_spend_usd',
+  'financial.recipient_count',
+  'execution.requires_contract_upgrade',
+  'execution.reversible',
+  'governance.constitutional_change',
+  'beneficiaries.primary_scope',
+];
 
 function getPath(obj: unknown, path: string): unknown {
   const parts = path.split('.');
@@ -161,7 +213,6 @@ function predicateMatches(pred: Predicate, ctx: EvalContext): boolean {
     return compound.or.some((p: Predicate) => predicateMatches(p, ctx));
   }
   if (compound.not) return !predicateMatches(compound.not, ctx);
-  // PathPredicate — usually one key per object, but AND them if multiple
   for (const [path, cmp] of Object.entries(pred as PathPredicate)) {
     const value = getPath(ctx, path);
     if (!comparatorMatches(value, cmp)) return false;
@@ -169,19 +220,60 @@ function predicateMatches(pred: Predicate, ctx: EvalContext): boolean {
   return true;
 }
 
+function confidenceFor(analysis: AnalysisForPolicy, field: string, fallback: number): number {
+  return analysis.uncertainty.field_confidence[field] ?? fallback;
+}
+
+function lowConfidencePolicyInputs(analysis: AnalysisForPolicy, fallback: number): boolean {
+  if (analysis.uncertainty.low_confidence_fields.length > 0) return true;
+  return POLICY_INPUT_FIELDS.some(
+    (field) => confidenceFor(analysis, field, fallback) < LOW_CONFIDENCE_THRESHOLD,
+  );
+}
+
+function matchingDelegation(profile: PolicyProfileT, analysis: AnalysisForPolicy) {
+  return profile.delegation_rules.find((r) => r.category === analysis.category);
+}
+
+function matchingDelegateChoice(profile: PolicyProfileT, analysis: AnalysisForPolicy): Decision | '' {
+  const delegation = matchingDelegation(profile, analysis);
+  if (!delegation) return '';
+  const delegate = delegation.delegate.toLowerCase();
+  const signal = analysis.signals.delegate_votes.find(
+    (v) => v.delegate.toLowerCase() === delegate && v.choice,
+  );
+  return signal?.choice ?? '';
+}
+
 export function evaluate(
   analysis: AnalysisForPolicy,
-  profile: PolicyProfileT,
+  profileInput: PolicyProfileT,
   rules: Rule[],
   proposal: ProposalMeta = { id: '(unspecified)' },
 ): PolicyEvaluation {
+  const profile = normalizeProfile(profileInput);
   const extractionConfidence = analysis.extraction_confidence ?? DEFAULT_EXTRACTION_CONFIDENCE;
+  const delegateChoice = matchingDelegateChoice(profile, analysis);
 
-  const ctx: EvalContext = { profile, analysis, proposal, computed: {} };
+  const ctx: EvalContext = {
+    profile,
+    analysis,
+    proposal,
+    computed: {
+      always: true,
+      extraction_confidence: extractionConfidence,
+      low_confidence_policy_inputs: lowConfidencePolicyInputs(analysis, extractionConfidence),
+      delegate_rule_applies: Boolean(matchingDelegation(profile, analysis)),
+      delegate_signal_available: delegateChoice !== '',
+      delegate_choice: delegateChoice,
+    },
+  };
+
   const hardRules = rules.filter((r) => r.then.action).sort((a, b) => b.priority - a.priority);
   const softRules = rules.filter((r) => r.then.score);
 
-  // Pass 1: high-priority hard rules (short-circuit)
+  // Pass 1: high-priority hard rules. These include low-confidence extraction
+  // and high-stakes manual-review guards, so they run before any vote action.
   for (const rule of hardRules.filter((r) => r.priority >= HARD_PRIORITY_THRESHOLD)) {
     if (predicateMatches(rule.when, ctx)) {
       return {
@@ -195,7 +287,8 @@ export function evaluate(
     }
   }
 
-  // Pass 2: accumulate soft-rule scores
+  // Pass 2: optional soft scores retained for compatibility, though v2 policy
+  // primarily uses explicit action rules.
   const scores: Record<Decision, number> = { FOR: 0, AGAINST: 0, ABSTAIN: 0, MANUAL_REVIEW: 0 };
   const triggeredSoft: TriggeredRule[] = [];
   for (const rule of softRules) {
@@ -214,10 +307,8 @@ export function evaluate(
     }
   }
 
-  const margin = Math.abs(scores.FOR - scores.AGAINST);
-  ctx.computed = { score_for: scores.FOR, score_against: scores.AGAINST, score_margin: margin };
-
-  // Pass 3: low-priority hard rules (margin guards, etc.)
+  // Pass 3: low-priority hard rules. Category defaults and default actions live
+  // here, after all manual-review and high-stakes rules have had first refusal.
   for (const rule of hardRules.filter((r) => r.priority < HARD_PRIORITY_THRESHOLD)) {
     if (predicateMatches(rule.when, ctx)) {
       return {
@@ -228,17 +319,16 @@ export function evaluate(
           { id: rule.id, priority: rule.priority, reason: rule.then.reason },
         ],
         scores,
-        margin,
+        margin: 0,
         engine_version: ENGINE_VERSION,
       };
     }
   }
 
-  // Final: highest-scoring action
   const decision: Decision =
     scores.FOR > scores.AGAINST ? 'FOR' : scores.AGAINST > scores.FOR ? 'AGAINST' : 'ABSTAIN';
-
-  const marginFactor = Math.min(1, margin / 3); // normalize: margin of 3 => full conf
+  const margin = Math.abs(scores.FOR - scores.AGAINST);
+  const marginFactor = Math.min(1, margin / 3);
   const confidence =
     decision === 'ABSTAIN' ? extractionConfidence * 0.5 : extractionConfidence * marginFactor;
 
@@ -254,15 +344,12 @@ export function evaluate(
 
 // ---------------------------------------------------------------------------
 // Profile compilation — turn a PolicyProfile into a concrete rule list.
-// This is the deterministic glue between user preferences and the engine.
 // ---------------------------------------------------------------------------
 
-export function compileProfileToRules(profile: PolicyProfileT): Rule[] {
+export function compileProfileToRules(profileInput: PolicyProfileT): Rule[] {
+  const profile = normalizeProfile(profileInput);
   const rules: Rule[] = [];
 
-  // --- HARD RULES ---
-
-  // 1000: author blocklist (hard veto)
   if (profile.author_blocklist.length > 0) {
     rules.push({
       id: 'hard_veto_authors',
@@ -272,201 +359,478 @@ export function compileProfileToRules(profile: PolicyProfileT): Rule[] {
     });
   }
 
-  // 900: manual-review categories
-  for (const cat of profile.manual_review_categories) {
-    rules.push({
-      id: `manual_review_${cat.toLowerCase()}`,
-      priority: 900,
-      when: { 'analysis.category': { eq: cat } },
-      then: {
-        action: 'MANUAL_REVIEW',
-        reason: `${cat} proposals require your manual review per profile`,
-      },
-    });
-  }
-
-  // 850: personal treasury cap
-  if (profile.max_treasury_usd_auto !== null) {
-    rules.push({
-      id: 'personal_treasury_cap',
-      priority: 850,
-      when: {
-        and: [
-          { 'analysis.category': { eq: 'TREASURY_SPEND' } },
-          { 'analysis.flags.treasury_spend_usd': { gt: profile.max_treasury_usd_auto } },
-        ],
-      },
-      then: {
-        action: 'MANUAL_REVIEW',
-        reason: `treasury spend exceeds your auto-approve cap of $${profile.max_treasury_usd_auto.toLocaleString()}`,
-      },
-    });
-  }
-
-  // 700: low-confidence guard (always on)
   rules.push({
     id: 'low_conf_guard',
-    priority: 700,
-    when: { 'analysis.extraction_confidence': { lt: 0.75 } },
+    priority: 980,
+    when: { 'computed.extraction_confidence': { lt: LOW_CONFIDENCE_THRESHOLD } },
     then: {
       action: 'MANUAL_REVIEW',
-      reason: 'extraction confidence below 0.75 — please review manually',
+      reason: 'overall extraction confidence below 0.75',
     },
   });
 
-  // 600: requires_human_judgment flag from the LLM itself
+  if (profile.manual_review_flags.includes('LOW_CONFIDENCE_EXTRACTION')) {
+    rules.push({
+      id: 'low_confidence_policy_inputs',
+      priority: 970,
+      when: { 'computed.low_confidence_policy_inputs': { eq: true } },
+      then: {
+        action: 'MANUAL_REVIEW',
+        reason: 'one or more policy-critical extracted fields has low confidence',
+      },
+    });
+  }
+
   rules.push({
     id: 'llm_flagged_ambiguous',
-    priority: 600,
+    priority: 960,
     when: { 'analysis.uncertainty.requires_human_judgment': { eq: true } },
     then: {
       action: 'MANUAL_REVIEW',
-      reason: 'LLM flagged this proposal as ambiguous; requires human judgment',
+      reason: 'LLM flagged this proposal as ambiguous',
     },
   });
 
-  // --- SOFT RULES (priority ~100) ---
-
-  // Treasury conservatism axis
-  if (profile.treasury_conservatism >= 4) {
+  for (const cat of profile.manual_review_categories) {
     rules.push({
-      id: 'conservative_treasury_no_milestones',
-      priority: 100,
-      when: {
-        and: [
-          { 'analysis.category': { eq: 'TREASURY_SPEND' } },
-          { 'analysis.flags.has_milestones': { eq: false } },
-        ],
-      },
-      then: { score: { AGAINST: 2.0 }, reason: 'treasury spend without milestones' },
-    });
-    rules.push({
-      id: 'conservative_treasury_align',
-      priority: 100,
-      when: { 'analysis.value_alignment.treasury_conservatism': { lt: -0.3 } },
+      id: `manual_review_${cat.toLowerCase()}`,
+      priority: 930,
+      when: { 'analysis.category': { eq: cat } },
       then: {
-        score: { AGAINST: 1.5 },
-        reason: 'proposal conflicts with your conservative treasury stance',
-      },
-    });
-  } else if (profile.treasury_conservatism <= 2) {
-    rules.push({
-      id: 'growth_treasury_align',
-      priority: 100,
-      when: { 'analysis.value_alignment.treasury_conservatism': { lt: -0.3 } },
-      then: {
-        score: { FOR: 1.0 },
-        reason: 'aggressive treasury use fits your growth preference',
+        action: 'MANUAL_REVIEW',
+        reason: `${cat} proposals require your manual review`,
       },
     });
   }
 
-  // Decentralization priority axis
-  if (profile.decentralization_priority >= 4) {
-    rules.push({
-      id: 'prefer_decentralization',
-      priority: 100,
-      when: { 'analysis.value_alignment.decentralization': { gt: 0.5 } },
-      then: { score: { FOR: 2.0 }, reason: 'aligns with your decentralization priority' },
-    });
-    rules.push({
-      id: 'penalize_centralization',
-      priority: 100,
-      when: { 'analysis.value_alignment.decentralization': { lt: -0.3 } },
-      then: { score: { AGAINST: 2.5 }, reason: 'conflicts with your decentralization priority' },
-    });
-  }
+  addManualReviewFlagRules(rules, profile);
+  addHardLimitRules(rules, profile);
+  addDelegationRules(rules, profile);
+  addCategoryDefaultRules(rules, profile);
 
-  // Growth vs sustainability axis
-  if (profile.growth_vs_sustainability >= 4) {
-    rules.push({
-      id: 'prefer_sustainability',
-      priority: 100,
-      when: { 'analysis.value_alignment.growth_vs_sustainability': { gt: 0.3 } },
-      then: { score: { FOR: 1.0 }, reason: 'favors sustainability per your preference' },
-    });
-  } else if (profile.growth_vs_sustainability <= 2) {
-    rules.push({
-      id: 'prefer_growth',
-      priority: 100,
-      when: { 'analysis.value_alignment.growth_vs_sustainability': { lt: -0.3 } },
-      then: { score: { FOR: 1.0 }, reason: 'favors growth per your preference' },
-    });
-  }
-
-  // Protocol risk tolerance axis
-  if (profile.protocol_risk_tolerance <= 2) {
-    rules.push({
-      id: 'penalize_risk',
-      priority: 100,
-      when: { 'analysis.value_alignment.protocol_risk': { lt: -0.3 } },
-      then: { score: { AGAINST: 2.0 }, reason: 'raises protocol risk beyond your tolerance' },
-    });
-    rules.push({
-      id: 'irreversible_caution',
-      priority: 100,
-      when: {
-        and: [
-          { 'analysis.flags.reversible': { eq: false } },
-          { 'analysis.flags.requires_contract_upgrade': { eq: true } },
-        ],
-      },
-      then: {
-        score: { AGAINST: 1.5 },
-        reason: 'irreversible contract upgrade, low risk tolerance',
-      },
-    });
-  }
-
-  // --- MARGIN GUARD (low-priority hard rule) ---
   rules.push({
-    id: 'margin_guard',
-    priority: 50,
-    when: { 'computed.score_margin': { lt: 1.0 } },
-    then: { action: 'ABSTAIN', reason: 'insufficient decision margin — too close to call' },
+    id: 'default_action',
+    priority: 1,
+    when: { 'computed.always': { eq: true } },
+    then: {
+      action: profile.default_action,
+      reason: `no specific policy rule matched; default action is ${profile.default_action}`,
+    },
   });
 
   return rules;
 }
 
+function addManualReviewFlagRules(rules: Rule[], profile: PolicyProfileT) {
+  const has = (flag: ManualReviewFlagT) => profile.manual_review_flags.includes(flag);
+
+  if (has('UNKNOWN_TREASURY_AMOUNT')) {
+    rules.push({
+      id: 'review_unknown_treasury_amount',
+      priority: 910,
+      when: {
+        and: [
+          { 'analysis.category': { eq: 'TREASURY_SPEND' } },
+          { 'analysis.financial.treasury_spend_usd': { eq: null } },
+        ],
+      },
+      then: { action: 'MANUAL_REVIEW', reason: 'treasury spend amount is unknown' },
+    });
+  }
+
+  if (has('LARGE_TREASURY_SPEND') && profile.large_treasury_usd !== null) {
+    rules.push({
+      id: 'review_large_treasury_spend',
+      priority: 905,
+      when: { 'analysis.financial.treasury_spend_usd': { gt: profile.large_treasury_usd } },
+      then: {
+        action: 'MANUAL_REVIEW',
+        reason: `treasury spend exceeds review threshold of $${profile.large_treasury_usd.toLocaleString()}`,
+      },
+    });
+  }
+
+  if (has('SINGLE_RECIPIENT_TREASURY')) {
+    rules.push({
+      id: 'review_single_recipient_treasury',
+      priority: 900,
+      when: {
+        and: [
+          { 'analysis.financial.treasury_spend_usd': { gt: 0 } },
+          { 'analysis.financial.recipient_count': { eq: 1 } },
+        ],
+      },
+      then: { action: 'MANUAL_REVIEW', reason: 'treasury spend goes to one recipient' },
+    });
+  }
+
+  if (has('CONTRACT_UPGRADE')) {
+    rules.push({
+      id: 'review_contract_upgrade',
+      priority: 895,
+      when: { 'analysis.execution.requires_contract_upgrade': { eq: true } },
+      then: { action: 'MANUAL_REVIEW', reason: 'proposal requires a contract upgrade' },
+    });
+  }
+
+  if (has('OWNERSHIP_OR_PERMISSION_CHANGE')) {
+    rules.push({
+      id: 'review_ownership_or_permissions',
+      priority: 890,
+      when: {
+        or: [
+          { 'analysis.execution.touches_ownership': { eq: true } },
+          { 'analysis.execution.changes_permissions': { eq: true } },
+          { 'analysis.execution.creates_or_extends_council': { eq: true } },
+        ],
+      },
+      then: { action: 'MANUAL_REVIEW', reason: 'proposal changes ownership, permissions, or council authority' },
+    });
+  }
+
+  if (has('CONSTITUTIONAL_CHANGE')) {
+    rules.push({
+      id: 'review_constitutional_change',
+      priority: 885,
+      when: { 'analysis.governance.constitutional_change': { eq: true } },
+      then: { action: 'MANUAL_REVIEW', reason: 'constitutional changes require review' },
+    });
+  }
+
+  if (has('UNCLEAR_BENEFICIARIES')) {
+    rules.push({
+      id: 'review_unclear_beneficiaries',
+      priority: 880,
+      when: { 'analysis.beneficiaries.unclear_beneficiaries': { eq: true } },
+      then: { action: 'MANUAL_REVIEW', reason: 'beneficiaries are unclear' },
+    });
+  }
+
+  if (has('UNKNOWN_RECIPIENT')) {
+    rules.push({
+      id: 'review_unknown_recipient',
+      priority: 875,
+      when: { 'analysis.beneficiaries.primary_scope': { eq: 'UNKNOWN' } },
+      then: { action: 'MANUAL_REVIEW', reason: 'recipient or beneficiary scope is unknown' },
+    });
+  }
+
+  if (has('NO_MILESTONES')) {
+    rules.push({
+      id: 'review_no_milestones',
+      priority: 870,
+      when: {
+        and: [
+          { 'analysis.financial.treasury_spend_usd': { gt: 0 } },
+          { 'analysis.execution.has_milestones': { eq: false } },
+        ],
+      },
+      then: { action: 'MANUAL_REVIEW', reason: 'treasury spend has no milestones' },
+    });
+  }
+}
+
+function addHardLimitRules(rules: Rule[], profile: PolicyProfileT) {
+  const hard = profile.hard_rules;
+
+  if (hard.max_single_recipient_treasury_percent !== null) {
+    rules.push({
+      id: 'hard_against_single_recipient_treasury_percent',
+      priority: 820,
+      when: {
+        and: [
+          { 'analysis.financial.recipient_count': { eq: 1 } },
+          { 'analysis.financial.treasury_percent': { gt: hard.max_single_recipient_treasury_percent } },
+        ],
+      },
+      then: {
+        action: 'AGAINST',
+        reason: `single recipient receives more than ${hard.max_single_recipient_treasury_percent}% of treasury`,
+      },
+    });
+  }
+
+  if (hard.max_single_recipient_treasury_usd !== null) {
+    rules.push({
+      id: 'hard_against_single_recipient_treasury_usd',
+      priority: 815,
+      when: {
+        and: [
+          { 'analysis.financial.recipient_count': { eq: 1 } },
+          { 'analysis.financial.treasury_spend_usd': { gt: hard.max_single_recipient_treasury_usd } },
+        ],
+      },
+      then: {
+        action: 'AGAINST',
+        reason: `single recipient treasury spend exceeds $${hard.max_single_recipient_treasury_usd.toLocaleString()}`,
+      },
+    });
+  }
+
+  if (hard.vote_against_emission_increases) {
+    rules.push({
+      id: 'hard_against_emission_increase',
+      priority: 810,
+      when: { 'analysis.economics.emissions_change': { eq: 'INCREASE' } },
+      then: { action: 'AGAINST', reason: 'policy votes against emission increases' },
+    });
+  }
+
+  if (hard.vote_for_emission_cuts) {
+    rules.push({
+      id: 'hard_for_emission_cut',
+      priority: 300,
+      when: { 'analysis.economics.emissions_change': { eq: 'DECREASE' } },
+      then: { action: 'FOR', reason: 'policy votes for emission cuts' },
+    });
+  }
+
+  if (hard.require_milestones_for_treasury) {
+    rules.push({
+      id: 'hard_review_treasury_without_milestones',
+      priority: 805,
+      when: {
+        and: [
+          { 'analysis.financial.treasury_spend_usd': { gt: 0 } },
+          { 'analysis.execution.has_milestones': { eq: false } },
+        ],
+      },
+      then: { action: 'MANUAL_REVIEW', reason: 'treasury spend lacks milestones' },
+    });
+  }
+}
+
+function addDelegationRules(rules: Rule[], profile: PolicyProfileT) {
+  for (const rule of profile.delegation_rules) {
+    for (const action of ['FOR', 'AGAINST', 'ABSTAIN'] as Decision[]) {
+      rules.push({
+        id: `delegate_${rule.category.toLowerCase()}_${action.toLowerCase()}`,
+        priority: 650,
+        when: {
+          and: [
+            { 'analysis.category': { eq: rule.category } },
+            { 'computed.delegate_choice': { eq: action } },
+          ],
+        },
+        then: {
+          action,
+          reason: `following ${rule.delegate} on ${rule.category}; fallback deadline is ${rule.wait_until_hours_before_end}h before close`,
+        },
+      });
+    }
+
+    if (rule.fallback === 'MANUAL_REVIEW') {
+      rules.push({
+        id: `delegate_${rule.category.toLowerCase()}_unavailable`,
+        priority: 640,
+        when: {
+          and: [
+            { 'analysis.category': { eq: rule.category } },
+            { 'computed.delegate_signal_available': { eq: false } },
+          ],
+        },
+        then: {
+          action: 'MANUAL_REVIEW',
+          reason: `${rule.delegate} has not voted yet; delegation fallback is manual review`,
+        },
+      });
+    } else if (rule.fallback === 'ABSTAIN') {
+      rules.push({
+        id: `delegate_${rule.category.toLowerCase()}_fallback_abstain`,
+        priority: 640,
+        when: {
+          and: [
+            { 'analysis.category': { eq: rule.category } },
+            { 'computed.delegate_signal_available': { eq: false } },
+          ],
+        },
+        then: {
+          action: 'ABSTAIN',
+          reason: `${rule.delegate} has not voted yet; delegation fallback is abstain`,
+        },
+      });
+    }
+  }
+}
+
+function addCategoryDefaultRules(rules: Rule[], profile: PolicyProfileT) {
+  for (const def of profile.category_defaults) {
+    const predicates: Predicate[] = [{ 'analysis.category': { eq: def.category } }];
+
+    if (def.max_treasury_usd !== null) {
+      predicates.push({ 'analysis.financial.treasury_spend_usd': { lte: def.max_treasury_usd } });
+    }
+    if (def.require_milestones) {
+      predicates.push({ 'analysis.execution.has_milestones': { eq: true } });
+    }
+    if (def.require_reporting) {
+      predicates.push({ 'analysis.execution.has_reporting': { eq: true } });
+    }
+    if (def.proposer_types.length > 0) {
+      predicates.push({ 'analysis.proposer.type': { in: def.proposer_types } });
+    }
+
+    rules.push({
+      id: `category_default_${def.category.toLowerCase()}`,
+      priority: 100,
+      when: { and: predicates },
+      then: {
+        action: def.action,
+        reason: def.reason,
+      },
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
-// Preset profiles — useful defaults; users can start from these and tweak.
+// Preset profiles — concrete defaults, not abstract value axes.
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_PROFILE: PolicyProfileT = {
-  treasury_conservatism: 3,
-  decentralization_priority: 4,
-  growth_vs_sustainability: 3,
-  protocol_risk_tolerance: 2,
-  max_treasury_usd_auto: 500_000,
-  author_blocklist: [],
+  schema_version: 'policy-v2',
+  default_action: 'ABSTAIN',
+  category_defaults: [
+    {
+      category: 'GRANT',
+      action: 'FOR',
+      max_treasury_usd: 100_000,
+      require_milestones: true,
+      require_reporting: true,
+      proposer_types: [],
+      reason: 'routine grant under $100k with milestones and reporting',
+    },
+    {
+      category: 'META_GOVERNANCE',
+      action: 'ABSTAIN',
+      max_treasury_usd: null,
+      require_milestones: false,
+      require_reporting: false,
+      proposer_types: [],
+      reason: 'meta-governance default is abstain unless a specific rule applies',
+    },
+  ],
   manual_review_categories: ['CONTRACT_UPGRADE', 'OWNERSHIP_TRANSFER'],
+  manual_review_flags: [
+    'LOW_CONFIDENCE_EXTRACTION',
+    'UNKNOWN_TREASURY_AMOUNT',
+    'LARGE_TREASURY_SPEND',
+    'CONTRACT_UPGRADE',
+    'OWNERSHIP_OR_PERMISSION_CHANGE',
+    'CONSTITUTIONAL_CHANGE',
+    'UNCLEAR_BENEFICIARIES',
+    'UNKNOWN_RECIPIENT',
+  ],
+  large_treasury_usd: 500_000,
+  author_blocklist: [],
+  delegation_rules: [
+    {
+      category: 'PARAMETER_CHANGE',
+      delegate: 'l2beat.eth',
+      fallback: 'MANUAL_REVIEW',
+      wait_until_hours_before_end: 6,
+    },
+  ],
+  hard_rules: {
+    max_single_recipient_treasury_percent: 0.5,
+    max_single_recipient_treasury_usd: 250_000,
+    vote_against_emission_increases: true,
+    vote_for_emission_cuts: false,
+    require_milestones_for_treasury: true,
+  },
   stated_values: [],
 };
 
 export const CONSERVATIVE_PROFILE: PolicyProfileT = {
-  treasury_conservatism: 5,
-  decentralization_priority: 5,
-  growth_vs_sustainability: 5,
-  protocol_risk_tolerance: 1,
-  max_treasury_usd_auto: 100_000,
-  author_blocklist: [],
+  ...DEFAULT_PROFILE,
+  category_defaults: [
+    {
+      category: 'GRANT',
+      action: 'MANUAL_REVIEW',
+      max_treasury_usd: 50_000,
+      require_milestones: true,
+      require_reporting: true,
+      proposer_types: [],
+      reason: 'conservative profile reviews grants unless very small and accountable',
+    },
+  ],
   manual_review_categories: [
     'CONTRACT_UPGRADE',
     'OWNERSHIP_TRANSFER',
     'TOKENOMICS',
     'META_GOVERNANCE',
+    'TREASURY_SPEND',
   ],
-  stated_values: [],
+  manual_review_flags: [
+    ...DEFAULT_PROFILE.manual_review_flags,
+    'SINGLE_RECIPIENT_TREASURY',
+    'NO_MILESTONES',
+  ],
+  large_treasury_usd: 100_000,
+  hard_rules: {
+    max_single_recipient_treasury_percent: 0.25,
+    max_single_recipient_treasury_usd: 100_000,
+    vote_against_emission_increases: true,
+    vote_for_emission_cuts: true,
+    require_milestones_for_treasury: true,
+  },
 };
 
 export const GROWTH_PROFILE: PolicyProfileT = {
-  treasury_conservatism: 2,
-  decentralization_priority: 3,
-  growth_vs_sustainability: 2,
-  protocol_risk_tolerance: 4,
-  max_treasury_usd_auto: 2_000_000,
-  author_blocklist: [],
+  ...DEFAULT_PROFILE,
+  category_defaults: [
+    {
+      category: 'GRANT',
+      action: 'FOR',
+      max_treasury_usd: 250_000,
+      require_milestones: true,
+      require_reporting: false,
+      proposer_types: [],
+      reason: 'growth profile supports milestone-gated grants under $250k',
+    },
+    {
+      category: 'PARTNERSHIP',
+      action: 'FOR',
+      max_treasury_usd: 100_000,
+      require_milestones: false,
+      require_reporting: true,
+      proposer_types: ['FOUNDATION', 'CORE_TEAM', 'DELEGATE'],
+      reason: 'growth profile supports accountable partnerships from known actors',
+    },
+  ],
   manual_review_categories: ['OWNERSHIP_TRANSFER'],
-  stated_values: [],
+  large_treasury_usd: 2_000_000,
+  hard_rules: {
+    max_single_recipient_treasury_percent: 1.0,
+    max_single_recipient_treasury_usd: 1_000_000,
+    vote_against_emission_increases: false,
+    vote_for_emission_cuts: false,
+    require_milestones_for_treasury: true,
+  },
 };
+
+export function normalizeProfile(input: unknown): PolicyProfileT {
+  const parsed = PolicyProfile.safeParse(input);
+  if (parsed.success) return parsed.data;
+
+  if (input && typeof input === 'object') {
+    const old = input as Record<string, unknown>;
+    if (
+      'treasury_conservatism' in old ||
+      'decentralization_priority' in old ||
+      'growth_vs_sustainability' in old ||
+      'protocol_risk_tolerance' in old
+    ) {
+      return {
+        ...DEFAULT_PROFILE,
+        stated_values: Array.isArray(old.stated_values)
+          ? old.stated_values.filter((v): v is string => typeof v === 'string')
+          : [],
+        author_blocklist: Array.isArray(old.author_blocklist)
+          ? old.author_blocklist.filter((v): v is string => typeof v === 'string')
+          : [],
+      };
+    }
+  }
+
+  return DEFAULT_PROFILE;
+}
