@@ -1,9 +1,13 @@
 /**
- * Policy page — view your saved policy or run onboarding if you haven't yet.
+ * Policy page — view your saved policy, edit it directly with live diff
+ * feedback, or redo onboarding from scratch.
  */
 
+import { useState } from 'react';
 import { type StoredProfile } from '../api';
+import { getStoredToken } from '../lib/auth';
 import { Onboarding } from '../Onboarding';
+import { PolicyEditor } from '../PolicyEditor';
 import { ConnectGate, SectionHeading } from './Activity';
 
 type AuthState =
@@ -26,6 +30,8 @@ export function Policy({
   onEdit: () => void;
   onSignIn: () => void;
 }) {
+  const [editing, setEditing] = useState(false);
+
   if (auth.status !== 'authed') {
     return (
       <ConnectGate
@@ -49,20 +55,45 @@ export function Policy({
     );
   }
 
+  const token = getStoredToken();
+
+  if (editing && token) {
+    return (
+      <>
+        <SectionHeading>Edit policy</SectionHeading>
+        <PolicyEditor
+          token={token}
+          baseProfile={profile.profile}
+          onSaved={() => {
+            setEditing(false);
+            onProfileSaved();
+          }}
+          onCancel={() => setEditing(false)}
+        />
+      </>
+    );
+  }
+
   return (
     <>
       <SectionHeading>Your policy</SectionHeading>
-      <ProfileCard profile={profile} onEdit={onEdit} />
+      <ProfileCard
+        profile={profile}
+        onEditRules={() => setEditing(true)}
+        onRecompile={onEdit}
+      />
     </>
   );
 }
 
 function ProfileCard({
   profile,
-  onEdit,
+  onEditRules,
+  onRecompile,
 }: {
   profile: StoredProfile;
-  onEdit: () => void;
+  onEditRules: () => void;
+  onRecompile: () => void;
 }) {
   if (!profile.profile) return null;
   const p = profile.profile.profile_json;
@@ -76,9 +107,14 @@ function ProfileCard({
             <code>{profile.profile.hash.slice(0, 10)}…</code>
           </div>
         </div>
-        <button onClick={onEdit} className="btn small">
-          Edit
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={onRecompile} className="btn small" title="Restart onboarding from your values">
+            Redo onboarding
+          </button>
+          <button onClick={onEditRules} className="btn small primary" title="Edit rules directly with live diff feedback">
+            Edit rules
+          </button>
+        </div>
       </div>
 
       {Array.isArray(p.stated_values) && p.stated_values.length > 0 && (

@@ -153,6 +153,23 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       CREATE INDEX IF NOT EXISTS audit_log_ref  ON audit_log (ref_id);
     `,
   },
+  {
+    id: '002_extraction_cache_versioning',
+    sql: `
+      -- Tag every cached analysis with the extraction schema version that
+      -- produced it. Lets us invalidate cleanly when the prompt/schema changes
+      -- without nuking the whole table.
+      ALTER TABLE proposal_analyses
+        ADD COLUMN extraction_schema_version TEXT NOT NULL DEFAULT '1';
+
+      -- Upsert key: one cached row per (proposal, schema version). Re-running
+      -- extraction with a different model replaces the previous row at the
+      -- same schema version (callers explicitly opt into that via
+      -- INSERT OR REPLACE). Bumping schema version creates a new row.
+      CREATE UNIQUE INDEX IF NOT EXISTS proposal_analyses_pid_schema_unique
+        ON proposal_analyses (proposal_id, extraction_schema_version);
+    `,
+  },
 ];
 
 function ensureMigrationsTable() {
@@ -348,4 +365,257 @@ export function saveProfile(args: {
     payload: { version, hash },
   });
   return { id, user_id: args.user_id, version, profile_json, rules_json, hash, created_at };
+}
+
+// ---------------------------------------------------------------------------
+// Proposals (raw Snapshot records)
+// ---------------------------------------------------------------------------
+
+export type ProposalRow = {
+  id: string;
+  space: string;
+  title: string | null;
+  body: string | null;
+  author: string | null;
+  type: string | null;
+  choices_json: string | null;
+  start_ts: number | null;
+  end_ts: number | null;
+  snapshot_block: number | null;
+  state: string | null;
+  raw_json: string;
+  fetched_at: number;
+  updated_at: number;
+};
+
+const proposalUpsert = db.prepare(`
+  INSERT INTO proposals (
+    id, space, title, body, author, type, choices_json,
+    start_ts, end_ts, snapshot_block, state, raw_json, fetched_at, updated_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(id) DO UPDATE SET
+    space          = excluded.space,
+    title          = excluded.title,
+    body           = excluded.body,
+    author         = excluded.author,
+    type           = excluded.type,
+    choices_json   = excluded.choices_json,
+    start_ts       = excluded.start_ts,
+    end_ts         = excluded.end_ts,
+    snapshot_block = excluded.snapshot_block,
+    state          = excluded.state,
+    raw_json       = excluded.raw_json,
+    updated_at     = excluded.updated_at
+`);
+
+const proposalById = db.prepare(`SELECT * FROM proposals WHERE id = ?`);
+const proposalsByEnd = db.prepare(`
+  SELECT * FROM proposals
+  WHERE (? IS NULL OR space = ?)
+    AND (? IS NULL OR state = ?)
+  ORDER BY end_ts DESC
+  LIMIT ?
+`);
+
+export type SnapshotProposalLike = {
+  id: string;
+  space?: string | { id?: string };
+  title?: string | null;
+  body?: string | null;
+  author?: string | null;
+  type?: string | null;
+  choices?: unknown;
+  start?: number | null;
+  end?: number | null;
+  snapshot?: number | string | null;
+  state?: string | null;
+};
+
+function spaceId(p: SnapshotProposalLike): string {
+  if (typeof p.space === 'string') return p.space;
+  return p.space?.id ?? '';
+}
+
+export function upsertProposal(p: SnapshotProposalLike): ProposalRow {
+  const now = Date.now();
+  const space = spaceId(p);
+  const choices_json = p.choices == null ? null : JSON.stringify(p.choices);
+  const snapshot_block =
+    p.snapshot == null ? null : typeof p.snapshot === 'string' ? Number(p.snapshot) || null : p.snapshot;
+  const raw_json = JSON.stringify(p);
+  proposalUpsert.run(
+    p.id,
+    space,
+    p.title ?? null,
+    p.body ?? null,
+    p.author ?? null,
+    p.type ?? null,
+    choices_json,
+    p.start ?? null,
+    p.end ?? null,
+    snapshot_block,
+    p.state ?? null,
+    raw_json,
+    now,
+    now,
+  );
+  return proposalById.get(p.id) as ProposalRow;
+}
+
+export function getProposal(id: string): ProposalRow | null {
+  return (proposalById.get(id) as ProposalRow | undefined) ?? null;
+}
+
+export function listProposals(opts: { space?: string; state?: string; limit?: number } = {}): ProposalRow[] {
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 500);
+  return proposalsByEnd.all(
+    opts.space ?? null,
+    opts.space ?? null,
+    opts.state ?? null,
+    opts.state ?? null,
+    limit,
+  ) as ProposalRow[];
+}
+
+// ---------------------------------------------------------------------------
+// Proposal analyses (extraction cache)
+//
+// Cache key: (proposal_id, extraction_schema_version). Bump
+// EXTRACTION_SCHEMA_VERSION in src/llm.ts when the schema or prompt changes
+// in a way that invalidates prior rows.
+// ---------------------------------------------------------------------------
+
+export type AnalysisRow = {
+  id: string;
+  proposal_id: string;
+  model_name: string;
+  model_version: string;
+  analysis_json: string;
+  extraction_confidence: number;
+  input_hash: string;
+  created_at: number;
+  extraction_schema_version: string;
+};
+
+const analysisUpsert = db.prepare(`
+  INSERT INTO proposal_analyses (
+    id, proposal_id, model_name, model_version, analysis_json,
+    extraction_confidence, input_hash, created_at, extraction_schema_version
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(proposal_id, extraction_schema_version) DO UPDATE SET
+    model_name            = excluded.model_name,
+    model_version         = excluded.model_version,
+    analysis_json         = excluded.analysis_json,
+    extraction_confidence = excluded.extraction_confidence,
+    input_hash            = excluded.input_hash,
+    created_at            = excluded.created_at
+`);
+
+const analysisGet = db.prepare(`
+  SELECT * FROM proposal_analyses
+  WHERE proposal_id = ? AND extraction_schema_version = ?
+`);
+
+const analysisListJoin = db.prepare(`
+  SELECT
+    p.id            AS p_id,
+    p.space         AS p_space,
+    p.title         AS p_title,
+    p.author        AS p_author,
+    p.state         AS p_state,
+    p.end_ts        AS p_end_ts,
+    p.raw_json      AS p_raw_json,
+    a.id            AS a_id,
+    a.model_name    AS a_model_name,
+    a.model_version AS a_model_version,
+    a.analysis_json AS a_analysis_json,
+    a.extraction_confidence AS a_confidence,
+    a.input_hash    AS a_input_hash,
+    a.created_at    AS a_created_at,
+    a.extraction_schema_version AS a_schema_version
+  FROM proposal_analyses a
+  JOIN proposals p ON p.id = a.proposal_id
+  WHERE a.extraction_schema_version = ?
+    AND (? IS NULL OR p.space = ?)
+  ORDER BY p.end_ts DESC NULLS LAST, a.created_at DESC
+  LIMIT ?
+`);
+
+export function upsertAnalysis(args: {
+  proposal_id: string;
+  model_name: string;
+  model_version: string;
+  analysis: unknown;
+  extraction_confidence: number;
+  input_hash: string;
+  schema_version: string;
+}): AnalysisRow {
+  const id = randomUUID();
+  const now = Date.now();
+  analysisUpsert.run(
+    id,
+    args.proposal_id,
+    args.model_name,
+    args.model_version,
+    JSON.stringify(args.analysis),
+    args.extraction_confidence,
+    args.input_hash,
+    now,
+    args.schema_version,
+  );
+  return analysisGet.get(args.proposal_id, args.schema_version) as AnalysisRow;
+}
+
+export function getCachedAnalysis(proposal_id: string, schema_version: string): AnalysisRow | null {
+  return (analysisGet.get(proposal_id, schema_version) as AnalysisRow | undefined) ?? null;
+}
+
+export type CachedProposalWithAnalysis = {
+  proposal: ProposalRow;
+  analysis: AnalysisRow;
+};
+
+export function listCachedAnalyses(opts: {
+  schema_version: string;
+  space?: string;
+  limit?: number;
+}): CachedProposalWithAnalysis[] {
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 500);
+  const rows = analysisListJoin.all(
+    opts.schema_version,
+    opts.space ?? null,
+    opts.space ?? null,
+    limit,
+  ) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    proposal: {
+      id: r.p_id as string,
+      space: r.p_space as string,
+      title: (r.p_title as string | null) ?? null,
+      body: null,
+      author: (r.p_author as string | null) ?? null,
+      type: null,
+      choices_json: null,
+      start_ts: null,
+      end_ts: (r.p_end_ts as number | null) ?? null,
+      snapshot_block: null,
+      state: (r.p_state as string | null) ?? null,
+      raw_json: r.p_raw_json as string,
+      fetched_at: 0,
+      updated_at: 0,
+    },
+    analysis: {
+      id: r.a_id as string,
+      proposal_id: r.p_id as string,
+      model_name: r.a_model_name as string,
+      model_version: r.a_model_version as string,
+      analysis_json: r.a_analysis_json as string,
+      extraction_confidence: r.a_confidence as number,
+      input_hash: r.a_input_hash as string,
+      created_at: r.a_created_at as number,
+      extraction_schema_version: r.a_schema_version as string,
+    },
+  }));
 }

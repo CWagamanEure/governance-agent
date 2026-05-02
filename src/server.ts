@@ -22,7 +22,7 @@ if (existsSync('.env')) {
 import { mnemonicToAccount } from 'viem/accounts';
 import { verifyMessage } from 'viem';
 import { AttestClient } from '@layr-labs/ecloud-sdk/attest';
-import { extractOne, pickModel, type ModelAlias } from './llm.js';
+import { extractOne, pickModel, EXTRACTION_SCHEMA_VERSION, type ModelAlias } from './llm.js';
 import {
   signVote,
   verifyEnvelope,
@@ -35,6 +35,7 @@ import { runPipeline, type SnapshotProposalRaw } from './pipeline.js';
 import {
   PolicyProfile as PolicyProfileSchema,
   compileProfileToRules,
+  evaluate as evaluatePolicy,
   type AnalysisForPolicy,
   type PolicyProfileT,
 } from './policy.js';
@@ -45,6 +46,7 @@ import {
   getLatestProfile,
   listAudit,
   appendAudit,
+  listCachedAnalyses,
 } from './db.js';
 import {
   generateNonce,
@@ -552,6 +554,140 @@ app.get('/profile', (c) => {
       profile_json: JSON.parse(latest.profile_json),
       rules_json: JSON.parse(latest.rules_json),
     },
+  });
+});
+
+/**
+ * GET /proposals/cached
+ *
+ * Returns recent closed proposals along with their cached LLM extractions,
+ * scoped to the current EXTRACTION_SCHEMA_VERSION. Backs the policy editor's
+ * "what would have changed" diff feedback: the editor calls this once for
+ * the corpus, then re-runs policy evaluation in-memory (or via
+ * /policy/preview) as the user tweaks rules.
+ *
+ * No expensive work happens here — this is a DB read.
+ *
+ *   ?limit=N            — max rows (default 25, hard cap 200)
+ *   ?space=...          — filter by Snapshot space id
+ *
+ * Auth: requires a SIWE session. The cache itself is shared (proposals are
+ * public on Snapshot), but we gate on auth to avoid scraping and to keep
+ * this endpoint inside the same trust surface as /profile.
+ */
+app.get('/proposals/cached', (c) => {
+  try {
+    requireAuth(c);
+  } catch {
+    return c.json({ error: 'authentication required' }, 401);
+  }
+
+  const limitRaw = c.req.query('limit');
+  const limit = limitRaw ? Math.min(Math.max(parseInt(limitRaw, 10) || 25, 1), 200) : 25;
+  const space = c.req.query('space') || undefined;
+
+  const items = listCachedAnalyses({
+    schema_version: EXTRACTION_SCHEMA_VERSION,
+    space,
+    limit,
+  });
+
+  return c.json({
+    schema_version: EXTRACTION_SCHEMA_VERSION,
+    count: items.length,
+    items: items.map(({ proposal, analysis }) => ({
+      proposal: {
+        id: proposal.id,
+        space: proposal.space,
+        title: proposal.title,
+        author: proposal.author,
+        state: proposal.state,
+        end_ts: proposal.end_ts,
+        // raw_json is the canonical Snapshot record; expose it so the editor
+        // can show choices, body, etc. without an extra round-trip.
+        raw: JSON.parse(proposal.raw_json),
+      },
+      analysis: {
+        id: analysis.id,
+        model_name: analysis.model_name,
+        model_version: analysis.model_version,
+        extraction_confidence: analysis.extraction_confidence,
+        extraction_schema_version: analysis.extraction_schema_version,
+        created_at: analysis.created_at,
+        analysis: JSON.parse(analysis.analysis_json),
+      },
+    })),
+  });
+});
+
+/**
+ * POST /policy/preview
+ *
+ * Run policy evaluation across the entire cached-proposal corpus against a
+ * draft PolicyProfile. The editor calls this on every edit and diffs the
+ * result against the baseline (saved profile) to show "what would have
+ * changed."
+ *
+ * No LLM, no signing — purely deterministic. Cheap to call repeatedly.
+ *
+ * Body: { profile: PolicyProfileT }
+ * Response:
+ *   {
+ *     schema_version, count,
+ *     decisions: [{ proposal_id, decision, confidence, triggered_rule_ids }]
+ *   }
+ */
+app.post('/policy/preview', async (c) => {
+  try {
+    requireAuth(c);
+  } catch {
+    return c.json({ error: 'authentication required' }, 401);
+  }
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid JSON body' }, 400);
+  }
+
+  const parsed = PolicyProfileSchema.safeParse(body?.profile);
+  if (!parsed.success) {
+    return c.json({ error: 'invalid profile', issues: parsed.error.issues }, 400);
+  }
+  const profile = parsed.data;
+  const rules = compileProfileToRules(profile);
+
+  const cached = listCachedAnalyses({
+    schema_version: EXTRACTION_SCHEMA_VERSION,
+    limit: 200,
+  });
+
+  const decisions = cached.map(({ proposal, analysis }) => {
+    const a = JSON.parse(analysis.analysis_json) as AnalysisForPolicy;
+    // The cached extraction confidence isn't part of the AnalysisForPolicy
+    // shape inside the JSON; surface it from the analysis row.
+    a.extraction_confidence = analysis.extraction_confidence;
+    let raw: any = null;
+    try { raw = JSON.parse(proposal.raw_json); } catch {}
+    const evaluation = evaluatePolicy(a, profile, rules, {
+      id: proposal.id,
+      author_address: raw?.author ?? proposal.author ?? undefined,
+      space: proposal.space,
+    });
+    return {
+      proposal_id: proposal.id,
+      proposal_title: proposal.title,
+      decision: evaluation.decision,
+      confidence: evaluation.confidence,
+      triggered_rule_ids: evaluation.triggered_rules.map((r) => r.id),
+    };
+  });
+
+  return c.json({
+    schema_version: EXTRACTION_SCHEMA_VERSION,
+    count: decisions.length,
+    decisions,
   });
 });
 

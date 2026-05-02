@@ -21,7 +21,8 @@
 import type { Account } from 'viem/accounts';
 import type { Hex } from 'viem';
 
-import { extractOne } from './llm.js';
+import { createHash } from 'node:crypto';
+import { extractOne, EXTRACTION_SCHEMA_VERSION } from './llm.js';
 import {
   evaluate,
   compileProfileToRules,
@@ -30,6 +31,11 @@ import {
   type PolicyEvaluation,
   type PolicyProfileT,
 } from './policy.js';
+import {
+  upsertProposal,
+  getCachedAnalysis,
+  upsertAnalysis,
+} from './db.js';
 import { decisionToChoice, signVote, type SignedVoteEnvelope } from './snapshot.js';
 import { signDecisionBlob, type SignedDecisionBlob } from './decision-blob.js';
 
@@ -95,15 +101,66 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
     state: input.proposal.state,
   };
 
-  // Step 1 — extraction (LLM Call 1) or pre-supplied analysis
+  // Step 1 — extraction. Three sources, in priority order:
+  //   (a) caller-supplied analysis (FEATURED demo path / re-runs)
+  //   (b) DB cache hit at the current EXTRACTION_SCHEMA_VERSION
+  //   (c) fresh LLM call, then write through to cache
   let analysis: AnalysisForPolicy | null = input.analysis ?? null;
   let extractionError: string | undefined;
-  const extractionSkipped = analysis !== null;
+  let extractionSkipped = analysis !== null;
+
+  if (!analysis && input.proposal.id) {
+    const cached = getCachedAnalysis(input.proposal.id, EXTRACTION_SCHEMA_VERSION);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached.analysis_json) as AnalysisForPolicy;
+        // The cache row stores the mean field-confidence in its own column;
+        // the policy engine reads it off the analysis object, so set it here.
+        parsed.extraction_confidence = cached.extraction_confidence;
+        analysis = parsed;
+        extractionSkipped = true;
+      } catch {
+        // Bad JSON in cache shouldn't be possible, but if so, fall through
+        // to a fresh extraction rather than 500.
+      }
+    }
+  }
 
   if (!analysis) {
     const result = await extractOne(input.proposal as Parameters<typeof extractOne>[0], 'sonnet');
     if (result.ok) {
       analysis = result.analysis;
+      // Write through to the cache so subsequent visits are free. Best-effort:
+      // the proposals table requires a row exist before we can insert into
+      // proposal_analyses, so upsertProposal first.
+      try {
+        upsertProposal(input.proposal as any);
+        const fc = result.analysis.uncertainty?.field_confidence ?? {};
+        const vals = Object.values(fc).filter((v): v is number => typeof v === 'number');
+        const meanConf = vals.length === 0 ? 0 : vals.reduce((a, b) => a + b, 0) / vals.length;
+        const inputHash = createHash('sha256')
+          .update(JSON.stringify({
+            id: input.proposal.id,
+            title: input.proposal.title,
+            author: input.proposal.author,
+            type: input.proposal.type,
+            choices: input.proposal.choices,
+            body: input.proposal.body,
+          }))
+          .digest('hex');
+        upsertAnalysis({
+          proposal_id: input.proposal.id,
+          model_name: result.meta.route,
+          model_version: result.meta.modelId,
+          analysis: result.analysis,
+          extraction_confidence: meanConf,
+          input_hash: inputHash,
+          schema_version: EXTRACTION_SCHEMA_VERSION,
+        });
+      } catch {
+        // Cache write failures don't fail the pipeline. The decision still
+        // returns to the caller; we just won't get the perf win on next visit.
+      }
     } else {
       extractionError = result.error;
     }

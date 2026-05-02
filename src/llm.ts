@@ -26,6 +26,12 @@ import { z } from 'zod';
 // Keep it tight; every field should be useful to a deterministic rule.
 // ---------------------------------------------------------------------------
 
+// Bump whenever ProposalAnalysis fields, the extraction prompt, or the
+// extraction model contract changes in a way that makes prior cached
+// extractions stale. Cache lookups key on this so old rows stay queryable
+// for forensics but new ones are produced on read miss.
+export const EXTRACTION_SCHEMA_VERSION = '1';
+
 export const Category = z.enum([
   'TREASURY_SPEND',
   'PARAMETER_CHANGE',
@@ -42,8 +48,8 @@ export const Category = z.enum([
 ]);
 
 export const Tradeoff = z.object({
-  pro: z.string().max(300),
-  con: z.string().max(300),
+  pro: z.string(),
+  con: z.string(),
 });
 
 export const ProposerType = z.enum([
@@ -130,7 +136,7 @@ export const Beneficiaries = z.object({
 
 export const Uncertainty = z.object({
   requires_human_judgment: z.boolean(),
-  ambiguity_notes: z.string().max(500).default(''),
+  ambiguity_notes: z.string().default(''),
   low_confidence_fields: z.array(z.string()).max(20),
   field_confidence: z
     .record(z.number().min(0).max(1))
@@ -151,10 +157,9 @@ export const ProposalAnalysis = z.object({
   category: Category,
   summary: z
     .string()
-    .max(600)
     .describe('One paragraph stating what the proposal does. No opinion, no argument for or against.'),
-  tradeoffs: z.array(Tradeoff).max(5),
-  affected_parties: z.array(z.string()).max(10),
+  tradeoffs: z.array(Tradeoff),
+  affected_parties: z.array(z.string()),
   proposer: Proposer,
   financial: Financial,
   execution: Execution,

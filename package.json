@@ -13,7 +13,9 @@
     "fetch:proposals": "tsx scripts/fetch-proposals.ts",
     "fetch:votes": "tsx scripts/fetch-votes.ts",
     "extract": "tsx scripts/extract.ts",
+    "backfill:cache": "tsx scripts/backfill-cache.ts",
     "test:policy": "tsx scripts/test-policy.ts",
+    "test:compiler": "tsx scripts/test-compiler.ts",
     "pipeline": "tsx scripts/run-pipeline.ts"
   },
   "dependencies": {

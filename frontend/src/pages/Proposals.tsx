@@ -7,12 +7,19 @@
 import { useEffect, useState } from 'react';
 import {
   fetchSnapshotProposal,
+  fetchActiveProposals,
   runPipeline,
   type PipelineResult,
 } from '../api';
 import { getStoredToken } from '../lib/auth';
 import { FEATURED } from '../data';
 import { ConnectGate, SectionHeading } from './Activity';
+
+// Capped on purpose. Each rendered ProposalCard kicks off an LLM extraction
+// for any proposal not already cached. 3 × ~$0.03 = ~$0.09 per page load
+// is the worst case while the gateway is on direct Anthropic for local dev.
+const ACTIVE_LIMIT = 3;
+const DAO_SPACE = 'arbitrumfoundation.eth';
 
 type AuthState =
   | { status: 'loading' }
@@ -26,6 +33,26 @@ export function Proposals({
   auth: AuthState;
   onSignIn: () => void;
 }) {
+  const [activeIds, setActiveIds] = useState<string[] | null>(null);
+  const [activeError, setActiveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchActiveProposals(DAO_SPACE, ACTIVE_LIMIT)
+      .then((list) => setActiveIds(list.map((p) => p.id)))
+      .catch((e) => {
+        setActiveError(String(e));
+        setActiveIds([]);
+      });
+  }, []);
+
+  // While loading, fall back to the FEATURED list so the page doesn't flash
+  // empty. After load: prefer live active proposals; if Snapshot returns
+  // none, surface the FEATURED list with a clear note.
+  const useActive = activeIds !== null && activeIds.length > 0;
+  const idsToRender: { id: string; analysis?: any }[] = useActive
+    ? activeIds!.map((id) => ({ id }))
+    : FEATURED;
+
   if (auth.status === 'anonymous') {
     return (
       <>
@@ -36,11 +63,9 @@ export function Proposals({
         />
 
         <SectionHeading>Live preview</SectionHeading>
-        <p className="muted tiny" style={{ marginTop: -4, marginBottom: 16 }}>
-          See what a recommendation looks like under the default policy.
-        </p>
+        <ProposalsListNote useActive={useActive} activeIds={activeIds} activeError={activeError} />
         <div className="proposals">
-          {FEATURED.map((p) => (
+          {idsToRender.map((p) => (
             <ProposalCard
               key={p.id}
               proposalId={p.id}
@@ -56,8 +81,9 @@ export function Proposals({
   return (
     <>
       <SectionHeading>Active proposals</SectionHeading>
+      <ProposalsListNote useActive={useActive} activeIds={activeIds} activeError={activeError} />
       <div className="proposals">
-        {FEATURED.map((p) => (
+        {idsToRender.map((p) => (
           <ProposalCard
             key={p.id}
             proposalId={p.id}
@@ -67,6 +93,43 @@ export function Proposals({
         ))}
       </div>
     </>
+  );
+}
+
+function ProposalsListNote({
+  useActive,
+  activeIds,
+  activeError,
+}: {
+  useActive: boolean;
+  activeIds: string[] | null;
+  activeError: string | null;
+}) {
+  if (activeIds === null) {
+    return (
+      <p className="muted tiny" style={{ marginTop: -4, marginBottom: 16 }}>
+        Looking for active proposals on {DAO_SPACE}…
+      </p>
+    );
+  }
+  if (activeError) {
+    return (
+      <p className="muted tiny" style={{ marginTop: -4, marginBottom: 16 }}>
+        Snapshot fetch failed ({activeError}). Showing curated featured proposals instead.
+      </p>
+    );
+  }
+  if (useActive) {
+    return (
+      <p className="muted tiny" style={{ marginTop: -4, marginBottom: 16 }}>
+        Showing {activeIds!.length} live active proposal{activeIds!.length === 1 ? '' : 's'} on {DAO_SPACE} (capped at {ACTIVE_LIMIT}). Each card runs the pipeline against your saved policy.
+      </p>
+    );
+  }
+  return (
+    <p className="muted tiny" style={{ marginTop: -4, marginBottom: 16 }}>
+      No live active proposals on {DAO_SPACE} right now. Showing curated featured proposals so the page isn't empty.
+    </p>
   );
 }
 

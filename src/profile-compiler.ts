@@ -36,20 +36,61 @@ export type CompileResult = {
 
 const SYSTEM = `You are compiling a user's governance preferences into a structured PolicyProfile.
 
-The user has provided plain-text values and a set of calibration votes on real past proposals. Your job is to infer the structured profile that captures their intent.
+The user has provided plain-text values and a set of calibration votes on real past proposals. Your job is to infer the structured profile that captures their intent — CONSERVATIVELY. The rules you generate will execute deterministically against future proposals; an autovote rule that fires on an adversarial proposal that "looks routine" is a real failure mode. Err toward MANUAL_REVIEW when calibration evidence is thin or values text is silent.
 
-Hard rules:
-- Each entry in stated_values must be one declarative sentence in the user's own voice, paraphrased only as needed for clarity. Do not invent values they didn't express.
-- Use concrete governance policy primitives, not abstract value scores.
-- default_action should normally be ABSTAIN unless the user clearly wants MANUAL_REVIEW by default.
-- category_defaults are routine autopilot rules. Use FOR only for low-stakes categories with clear safeguards such as max_treasury_usd, require_milestones, or require_reporting.
-- manual_review_categories should include CONTRACT_UPGRADE and OWNERSHIP_TRANSFER by default. Add TOKENOMICS, TREASURY_SPEND, META_GOVERNANCE, or PARTNERSHIP if the user is cautious about them.
-- manual_review_flags should include LOW_CONFIDENCE_EXTRACTION. Add flags that match the user's concerns.
-- delegation_rules encode "follow delegate X on category Y". Use fallback MANUAL_REVIEW unless the user explicitly wants abstain/category default.
-- hard_rules encode simple global limits: large single-recipient treasury caps, emission increase preference, and whether treasury spends need milestones.
+PRIORITY ORDER:
+1. Stated values text takes precedence when explicit ("I want to follow l2beat on technical changes" → delegation_rule).
+2. Calibration vote patterns refine where text is silent.
+3. Conservative defaults fill the rest.
+
+WHEN TO EMIT AN AUTOVOTE RULE (category_defaults with action FOR or AGAINST):
+Only when ALL of these hold:
+  (a) At least 2 calibration votes within the same category point the same direction, AND
+  (b) The pattern is narrow enough to defeat adversarial proposals — autovote rules MUST include constraining conditions such as max_treasury_usd, require_milestones, require_reporting. "GRANT FOR" with no other conditions is never acceptable; "GRANT FOR under $X with milestones and reporting" is.
+  (c) The user's stated values do not contradict the pattern. If user says "I'm skeptical of recurring spend" but voted FOR a recurring grant in calibration, the values text wins — do NOT autovote.
+
+If conditions aren't met, leave that category off category_defaults entirely. The default_action will catch it.
+
+EXAMPLES:
+
+Example 1 — user wants accountable small grants:
+  Values: "I support small open-source ecosystem grants under $50k that have milestones."
+  Calibration: FOR on cal-010-doc-translation ($12k, milestones), FOR on cal-011-analytics-tooling ($30k, milestones), FOR on cal-016-sdk-maintenance ($40k, milestones).
+  Pattern: GRANT under $50k with milestones is consistently FOR (3 votes, all same direction).
+  =>  category_defaults: [{ category: 'GRANT', action: 'FOR', max_treasury_usd: 50000, require_milestones: true, require_reporting: true, reason: 'small accountable grants align with stated values and calibration' }]
+
+Example 2 — user is skeptical, calibration is mixed:
+  Values: "I'm skeptical of recurring spend without clear KPIs."
+  Calibration: AGAINST on cal-001-stip-extension, ABSTAIN on cal-006-dip-update, FOR on cal-012-gas-rebate-extension.
+  Pattern: mixed. Values text is conservative.
+  =>  category_defaults: []  (no autovote — values text contradicts mixed calibration)
+  =>  manual_review_categories includes TREASURY_SPEND, META_GOVERNANCE
+  =>  manual_review_flags includes LARGE_TREASURY_SPEND, NO_MILESTONES
+
+Example 3 — explicit delegation:
+  Values: "On technical parameter changes, I want to follow l2beat.eth unless they have not voted."
+  =>  delegation_rules: [{ category: 'PARAMETER_CHANGE', delegate: 'l2beat.eth', fallback: 'MANUAL_REVIEW' }]
+  =>  do NOT also emit a PARAMETER_CHANGE category_default — the delegation rule is the policy.
+
+Example 4 — user is conservative across the board:
+  Values: "I want everything reviewed by hand. I don't trust automated voting yet."
+  =>  default_action: 'MANUAL_REVIEW'
+  =>  category_defaults: []
+  =>  This is a valid output. Not every user wants autovoting.
+
+CONSTRAINTS ON OTHER FIELDS:
+
+- stated_values: each entry is one declarative sentence in the user's own voice, paraphrased only for clarity. Do NOT invent values they didn't express.
+- default_action: 'MANUAL_REVIEW' unless the user explicitly wants ABSTAIN-as-default ("if you can't decide, just abstain").
+- manual_review_categories: ALWAYS include 'CONTRACT_UPGRADE' and 'OWNERSHIP_TRANSFER'. Add 'TOKENOMICS' if user mentions emissions/buybacks/token supply. Add 'TREASURY_SPEND' if user mentions large/recurring spend skepticism. Add 'META_GOVERNANCE' if user mentions governance process or delegate compensation skepticism. Add 'PARTNERSHIP' if user mentions concentration/decentralization concerns.
+- manual_review_flags: ALWAYS include 'LOW_CONFIDENCE_EXTRACTION', 'UNKNOWN_TREASURY_AMOUNT', 'LARGE_TREASURY_SPEND', 'CONTRACT_UPGRADE', 'OWNERSHIP_OR_PERMISSION_CHANGE', 'CONSTITUTIONAL_CHANGE', 'UNCLEAR_BENEFICIARIES', 'UNKNOWN_RECIPIENT'. Additionally include 'SINGLE_RECIPIENT_TREASURY' and 'NO_MILESTONES' if user mentions accountability or recipient-identifiability concerns.
 - author_blocklist: empty unless the user named specific addresses.
+- hard_rules:
+    * max_single_recipient_treasury_usd: set if user expressed any cap-on-single-recipient preference, otherwise null.
+    * vote_against_emission_increases: true unless user explicitly wants emission growth.
+    * require_milestones_for_treasury: true unless user is explicitly permissive on milestones.
 
-Calibration votes that are marked "personal_not_policy" are excluded — only generalize from the rest.`;
+Calibration votes marked "personal_not_policy" are excluded entirely — do not generalize from them.`;
 
 export async function compileProfile(input: CompileInput): Promise<CompileResult> {
   try {

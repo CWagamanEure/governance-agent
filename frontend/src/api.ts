@@ -200,6 +200,66 @@ export async function compileProfile(args: {
 }
 
 // ---------------------------------------------------------------------------
+// Cached proposals + policy preview (editor diff feedback)
+// ---------------------------------------------------------------------------
+
+export type CachedProposalRow = {
+  proposal: {
+    id: string;
+    space: string;
+    title: string | null;
+    author: string | null;
+    state: string | null;
+    end_ts: number | null;
+    raw: any;
+  };
+  analysis: {
+    id: string;
+    model_name: string;
+    model_version: string;
+    extraction_confidence: number;
+    extraction_schema_version: string;
+    created_at: number;
+    analysis: any;
+  };
+};
+
+export async function getCachedProposals(args: {
+  token: string;
+  limit?: number;
+}): Promise<{ schema_version: string; count: number; items: CachedProposalRow[] }> {
+  const url = new URL(`${BACKEND_URL}/proposals/cached`);
+  if (args.limit) url.searchParams.set('limit', String(args.limit));
+  const r = await fetch(url, { headers: { authorization: `Bearer ${args.token}` } });
+  if (!r.ok) throw new Error(`cached proposals failed: ${r.status}`);
+  return r.json();
+}
+
+export type PolicyPreviewDecision = {
+  proposal_id: string;
+  proposal_title: string | null;
+  decision: Decision;
+  confidence: number;
+  triggered_rule_ids: string[];
+};
+
+export async function previewPolicy(args: {
+  token: string;
+  profile: any;
+}): Promise<{ schema_version: string; count: number; decisions: PolicyPreviewDecision[] }> {
+  const r = await fetch(`${BACKEND_URL}/policy/preview`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${args.token}`,
+    },
+    body: JSON.stringify({ profile: args.profile }),
+  });
+  if (!r.ok) throw new Error(`policy preview failed: ${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+// ---------------------------------------------------------------------------
 // Snapshot — fetch a single proposal by id
 // ---------------------------------------------------------------------------
 
@@ -219,4 +279,26 @@ export async function fetchSnapshotProposal(id: string): Promise<any> {
   });
   const json = await r.json();
   return json?.data?.proposal ?? null;
+}
+
+const ACTIVE_PROPOSALS_QUERY = `
+query Active($space: String!, $first: Int!) {
+  proposals(
+    first: $first,
+    where: { space: $space, state: "active" },
+    orderBy: "end",
+    orderDirection: asc
+  ) {
+    id title state end
+  }
+}`;
+
+export async function fetchActiveProposals(space: string, first = 3): Promise<{ id: string; title: string; end: number }[]> {
+  const r = await fetch(SNAPSHOT_GQL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ query: ACTIVE_PROPOSALS_QUERY, variables: { space, first } }),
+  });
+  const json = await r.json();
+  return json?.data?.proposals ?? [];
 }

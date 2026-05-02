@@ -44,7 +44,7 @@ export const CategoryDefault = z.object({
   require_milestones: z.boolean().default(false),
   require_reporting: z.boolean().default(false),
   proposer_types: z.array(ProposerType).default([]),
-  reason: z.string().max(240).default('category default'),
+  reason: z.string().default('category default'),
 });
 export type CategoryDefaultT = z.infer<typeof CategoryDefault>;
 
@@ -379,17 +379,22 @@ export function compileProfileToRules(profileInput: PolicyProfileT): Rule[] {
         reason: 'one or more policy-critical extracted fields has low confidence',
       },
     });
-  }
 
-  rules.push({
-    id: 'llm_flagged_ambiguous',
-    priority: 960,
-    when: { 'analysis.uncertainty.requires_human_judgment': { eq: true } },
-    then: {
-      action: 'MANUAL_REVIEW',
-      reason: 'LLM flagged this proposal as ambiguous',
-    },
-  });
+    // The LLM's own self-reported "this is ambiguous" flag. Same trust class
+    // as low_confidence_policy_inputs — both are signals that extraction
+    // didn't produce confident inputs for the rule engine. Gated on the
+    // same user-controlled flag so the editor can actually surface diffs
+    // when a user chooses to act despite ambiguity.
+    rules.push({
+      id: 'llm_flagged_ambiguous',
+      priority: 960,
+      when: { 'analysis.uncertainty.requires_human_judgment': { eq: true } },
+      then: {
+        action: 'MANUAL_REVIEW',
+        reason: 'LLM flagged this proposal as ambiguous',
+      },
+    });
+  }
 
   for (const cat of profile.manual_review_categories) {
     rules.push({
