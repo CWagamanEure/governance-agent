@@ -227,6 +227,7 @@ type TestCase = {
   proposal?: { id: string; author_address?: string };
   expect: Decision;
   expectRule?: string;
+  expectSuggested?: Exclude<Decision, 'MANUAL_REVIEW'> | null;
 };
 
 const TESTS: TestCase[] = [
@@ -247,6 +248,7 @@ const TESTS: TestCase[] = [
     analysis: A_CONTRACT_UPGRADE,
     expect: 'MANUAL_REVIEW',
     expectRule: 'manual_review_contract_upgrade',
+    expectSuggested: 'ABSTAIN',
   },
   {
     name: 'large treasury spend -> MANUAL_REVIEW',
@@ -254,6 +256,7 @@ const TESTS: TestCase[] = [
     analysis: A_LARGE_TREASURY,
     expect: 'MANUAL_REVIEW',
     expectRule: 'review_large_treasury_spend',
+    expectSuggested: 'ABSTAIN',
   },
   {
     name: 'low extraction confidence -> MANUAL_REVIEW',
@@ -261,6 +264,7 @@ const TESTS: TestCase[] = [
     analysis: A_LOW_CONFIDENCE,
     expect: 'MANUAL_REVIEW',
     expectRule: 'low_conf_guard',
+    expectSuggested: null,
   },
   {
     name: 'low field confidence -> MANUAL_REVIEW',
@@ -268,6 +272,7 @@ const TESTS: TestCase[] = [
     analysis: A_LOW_FIELD_CONFIDENCE,
     expect: 'MANUAL_REVIEW',
     expectRule: 'low_confidence_policy_inputs',
+    expectSuggested: null,
   },
   {
     name: 'LLM flagged ambiguous -> MANUAL_REVIEW',
@@ -275,6 +280,18 @@ const TESTS: TestCase[] = [
     analysis: A_LLM_FLAGGED,
     expect: 'MANUAL_REVIEW',
     expectRule: 'llm_flagged_ambiguous',
+    expectSuggested: null,
+  },
+  {
+    name: 'manual-review gate still exposes lower vote rule lean',
+    profile: {
+      ...DEFAULT_PROFILE,
+      manual_review_categories: [...DEFAULT_PROFILE.manual_review_categories, 'GRANT'],
+    },
+    analysis: A_ROUTINE_GRANT,
+    expect: 'MANUAL_REVIEW',
+    expectRule: 'manual_review_grant',
+    expectSuggested: 'FOR',
   },
   {
     name: 'routine accountable grant -> FOR',
@@ -289,6 +306,7 @@ const TESTS: TestCase[] = [
     analysis: A_NO_MILESTONES,
     expect: 'MANUAL_REVIEW',
     expectRule: 'hard_review_treasury_without_milestones',
+    expectSuggested: 'ABSTAIN',
   },
   {
     name: 'single-recipient grant over hard cap -> AGAINST',
@@ -317,6 +335,7 @@ const TESTS: TestCase[] = [
     analysis: A_PARAMETER_WITHOUT_DELEGATE,
     expect: 'MANUAL_REVIEW',
     expectRule: 'delegate_parameter_change_unavailable',
+    expectSuggested: 'ABSTAIN',
   },
   {
     name: 'DIP-style meta governance defaults to ABSTAIN',
@@ -358,7 +377,12 @@ for (const tc of TESTS) {
   const decisionOk = result.decision === tc.expect;
   const ruleOk =
     !tc.expectRule || result.triggered_rules.some((r) => r.id === tc.expectRule);
-  const ok = decisionOk && ruleOk;
+  const suggestedOk =
+    !('expectSuggested' in tc) ||
+    (tc.expectSuggested === null
+      ? result.suggested_vote === null
+      : result.suggested_vote?.decision === tc.expectSuggested);
+  const ok = decisionOk && ruleOk && suggestedOk;
 
   if (ok) {
     passed++;
@@ -372,9 +396,18 @@ for (const tc of TESTS) {
     if (tc.expectRule && !ruleOk) {
       console.error(`    expected rule id in triggered list: ${tc.expectRule}`);
     }
+    if (!suggestedOk) {
+      console.error(`    expected suggested vote: ${tc.expectSuggested}`);
+      console.error(`    got suggested vote:      ${result.suggested_vote?.decision ?? null}`);
+    }
   }
 
   console.log(`    conf=${result.confidence.toFixed(2)}`);
+  if (result.suggested_vote) {
+    console.log(
+      `    suggested=${result.suggested_vote.decision} (${result.suggested_vote.confidence.toFixed(2)}) via ${result.suggested_vote.rule_id ?? result.suggested_vote.source}`,
+    );
+  }
   if (result.triggered_rules.length > 0) {
     console.log(`    triggered: ${result.triggered_rules.map((r) => r.id).join(', ')}`);
   }

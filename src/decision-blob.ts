@@ -73,6 +73,7 @@ export type DecisionBlobPayload = {
   choice: number | null;
   confidence: number;
   margin: number;
+  suggested_vote: PolicyEvaluation['suggested_vote'];
   triggered_rules: PolicyEvaluation['triggered_rules'];
   hashes: {
     policy: Hex;
@@ -216,6 +217,7 @@ export async function signDecisionBlob(
       choice: params.choice,
       confidence: params.evaluation.confidence,
       margin: params.evaluation.margin,
+      suggested_vote: params.evaluation.suggested_vote,
       triggered_rules: params.evaluation.triggered_rules,
       hashes: {
         policy: policyHash,

@@ -19,6 +19,7 @@ import { Category, ProposerType, type ProposalAnalysisT } from './llm.js';
 // ---------------------------------------------------------------------------
 
 export type Decision = 'FOR' | 'AGAINST' | 'ABSTAIN' | 'MANUAL_REVIEW';
+export type VoteDecision = Exclude<Decision, 'MANUAL_REVIEW'>;
 
 const DecisionSchema = z.enum(['FOR', 'AGAINST', 'ABSTAIN', 'MANUAL_REVIEW']);
 
@@ -133,12 +134,21 @@ export type TriggeredRule = {
   contribution?: Partial<Record<Decision, number>>;
 };
 
+export type SuggestedVote = {
+  decision: VoteDecision;
+  confidence: number; // [0, 1]
+  reason: string;
+  source: 'policy_rule' | 'score' | 'default_action';
+  rule_id?: string;
+};
+
 export type PolicyEvaluation = {
   decision: Decision;
   confidence: number; // [0, 1]
   triggered_rules: TriggeredRule[];
   scores: Record<Decision, number>;
   margin: number;
+  suggested_vote: SuggestedVote | null;
   engine_version: string;
 };
 
@@ -162,10 +172,11 @@ type EvalContext = {
 // Engine
 // ---------------------------------------------------------------------------
 
-export const ENGINE_VERSION = '0.2.0';
+export const ENGINE_VERSION = '0.2.1';
 const HARD_PRIORITY_THRESHOLD = 500;
 const DEFAULT_EXTRACTION_CONFIDENCE = 0.9;
 const LOW_CONFIDENCE_THRESHOLD = 0.75;
+const VOTE_DECISIONS = ['FOR', 'AGAINST', 'ABSTAIN'] as const;
 
 const POLICY_INPUT_FIELDS = [
   'category',
@@ -245,6 +256,111 @@ function matchingDelegateChoice(profile: PolicyProfileT, analysis: AnalysisForPo
   return signal?.choice ?? '';
 }
 
+function isVoteDecision(decision: Decision | undefined): decision is VoteDecision {
+  return decision === 'FOR' || decision === 'AGAINST' || decision === 'ABSTAIN';
+}
+
+function emptyScores(): Record<Decision, number> {
+  return { FOR: 0, AGAINST: 0, ABSTAIN: 0, MANUAL_REVIEW: 0 };
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function scoreSoftRules(
+  softRules: Rule[],
+  ctx: EvalContext,
+): { scores: Record<Decision, number>; triggeredSoft: TriggeredRule[] } {
+  const scores = emptyScores();
+  const triggeredSoft: TriggeredRule[] = [];
+
+  for (const rule of softRules) {
+    if (predicateMatches(rule.when, ctx)) {
+      const contribution: Partial<Record<Decision, number>> = {};
+      for (const [k, v] of Object.entries(rule.then.score!) as [Decision, number][]) {
+        scores[k] += v;
+        contribution[k] = v;
+      }
+      triggeredSoft.push({
+        id: rule.id,
+        priority: rule.priority,
+        reason: rule.then.reason,
+        contribution,
+      });
+    }
+  }
+
+  return { scores, triggeredSoft };
+}
+
+function suppressSuggestedVoteFor(rule: Rule): boolean {
+  return (
+    rule.id === 'low_conf_guard' ||
+    rule.id === 'low_confidence_policy_inputs' ||
+    rule.id === 'llm_flagged_ambiguous' ||
+    rule.id === 'review_unknown_treasury_amount' ||
+    rule.id === 'review_unclear_beneficiaries' ||
+    rule.id === 'review_unknown_recipient'
+  );
+}
+
+function suggestedVoteFromScores(
+  scores: Record<Decision, number>,
+  extractionConfidence: number,
+): SuggestedVote | null {
+  const ranked = VOTE_DECISIONS
+    .map((decision) => ({ decision, score: scores[decision] }))
+    .sort((a, b) => b.score - a.score);
+
+  const best = ranked[0];
+  const second = ranked[1];
+  if (!best || !second || best.score <= 0 || best.score === second.score) return null;
+
+  const margin = best.score - second.score;
+  return {
+    decision: best.decision,
+    confidence: clamp01(extractionConfidence * Math.min(0.8, 0.45 + margin / 5)),
+    reason: `soft policy scores favor ${best.decision}`,
+    source: 'score',
+  };
+}
+
+function suggestedVoteForManualReview(
+  gateRule: Rule,
+  hardRules: Rule[],
+  softRules: Rule[],
+  ctx: EvalContext,
+  extractionConfidence: number,
+): SuggestedVote | null {
+  if (suppressSuggestedVoteFor(gateRule)) return null;
+
+  for (const rule of hardRules) {
+    const action = rule.then.action;
+    if (rule.priority >= gateRule.priority) continue;
+    if (!isVoteDecision(action)) continue;
+    if (!predicateMatches(rule.when, ctx)) continue;
+
+    const source = rule.id === 'default_action' ? 'default_action' : 'policy_rule';
+    const confidenceFactor = source === 'default_action'
+      ? 0.52
+      : rule.priority >= HARD_PRIORITY_THRESHOLD
+        ? 0.82
+        : 0.68;
+
+    return {
+      decision: action,
+      confidence: clamp01(extractionConfidence * confidenceFactor),
+      reason: rule.then.reason,
+      source,
+      rule_id: rule.id,
+    };
+  }
+
+  const { scores } = scoreSoftRules(softRules, ctx);
+  return suggestedVoteFromScores(scores, extractionConfidence);
+}
+
 export function evaluate(
   analysis: AnalysisForPolicy,
   profileInput: PolicyProfileT,
@@ -276,12 +392,16 @@ export function evaluate(
   // and high-stakes manual-review guards, so they run before any vote action.
   for (const rule of hardRules.filter((r) => r.priority >= HARD_PRIORITY_THRESHOLD)) {
     if (predicateMatches(rule.when, ctx)) {
+      const decision = rule.then.action!;
       return {
-        decision: rule.then.action!,
+        decision,
         confidence: extractionConfidence,
         triggered_rules: [{ id: rule.id, priority: rule.priority, reason: rule.then.reason }],
-        scores: { FOR: 0, AGAINST: 0, ABSTAIN: 0, MANUAL_REVIEW: 0 },
+        scores: emptyScores(),
         margin: 0,
+        suggested_vote: decision === 'MANUAL_REVIEW'
+          ? suggestedVoteForManualReview(rule, hardRules, softRules, ctx, extractionConfidence)
+          : null,
         engine_version: ENGINE_VERSION,
       };
     }
@@ -289,30 +409,15 @@ export function evaluate(
 
   // Pass 2: optional soft scores retained for compatibility, though v2 policy
   // primarily uses explicit action rules.
-  const scores: Record<Decision, number> = { FOR: 0, AGAINST: 0, ABSTAIN: 0, MANUAL_REVIEW: 0 };
-  const triggeredSoft: TriggeredRule[] = [];
-  for (const rule of softRules) {
-    if (predicateMatches(rule.when, ctx)) {
-      const contribution: Partial<Record<Decision, number>> = {};
-      for (const [k, v] of Object.entries(rule.then.score!) as [Decision, number][]) {
-        scores[k] += v;
-        contribution[k] = v;
-      }
-      triggeredSoft.push({
-        id: rule.id,
-        priority: rule.priority,
-        reason: rule.then.reason,
-        contribution,
-      });
-    }
-  }
+  const { scores, triggeredSoft } = scoreSoftRules(softRules, ctx);
 
   // Pass 3: low-priority hard rules. Category defaults and default actions live
   // here, after all manual-review and high-stakes rules have had first refusal.
   for (const rule of hardRules.filter((r) => r.priority < HARD_PRIORITY_THRESHOLD)) {
     if (predicateMatches(rule.when, ctx)) {
+      const decision = rule.then.action!;
       return {
-        decision: rule.then.action!,
+        decision,
         confidence: extractionConfidence * 0.9,
         triggered_rules: [
           ...triggeredSoft,
@@ -320,6 +425,9 @@ export function evaluate(
         ],
         scores,
         margin: 0,
+        suggested_vote: decision === 'MANUAL_REVIEW'
+          ? suggestedVoteForManualReview(rule, hardRules, softRules, ctx, extractionConfidence)
+          : null,
         engine_version: ENGINE_VERSION,
       };
     }
@@ -338,6 +446,7 @@ export function evaluate(
     triggered_rules: triggeredSoft,
     scores,
     margin,
+    suggested_vote: null,
     engine_version: ENGINE_VERSION,
   };
 }

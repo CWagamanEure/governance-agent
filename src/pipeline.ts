@@ -467,6 +467,12 @@ function buildRationale(args: {
   md.push('');
   md.push(`## Decision: **${e.decision}**`);
   md.push(`- Confidence: ${(e.confidence * 100).toFixed(0)}%`);
+  if (e.decision === 'MANUAL_REVIEW' && e.suggested_vote) {
+    md.push(
+      `- Suggested vote for review: **${e.suggested_vote.decision}** ` +
+      `(${(e.suggested_vote.confidence * 100).toFixed(0)}%): ${e.suggested_vote.reason}`,
+    );
+  }
   md.push(`- Engine version: \`${e.engine_version}\``);
 
   md.push('');

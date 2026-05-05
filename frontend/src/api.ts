@@ -53,6 +53,7 @@ export type AttestationStub = {
 };
 
 export type Decision = 'FOR' | 'AGAINST' | 'ABSTAIN' | 'MANUAL_REVIEW';
+export type VoteDecision = Exclude<Decision, 'MANUAL_REVIEW'>;
 
 export type TriggeredRule = {
   id: string;
@@ -67,6 +68,13 @@ export type PolicyEvaluation = {
   triggered_rules: TriggeredRule[];
   scores: Record<Decision, number>;
   margin: number;
+  suggested_vote: {
+    decision: VoteDecision;
+    confidence: number;
+    reason: string;
+    source: 'policy_rule' | 'score' | 'default_action';
+    rule_id?: string;
+  } | null;
   engine_version: string;
 };
 

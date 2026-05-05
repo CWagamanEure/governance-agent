@@ -381,9 +381,11 @@ function ProposalCard({
   const decision = pipeline?.evaluation?.decision;
   const conf = pipeline?.evaluation?.confidence ?? 0;
   const triggered = pipeline?.evaluation?.triggered_rules ?? [];
+  const suggested = pipeline?.evaluation?.suggested_vote ?? null;
   const displayAnalysis = liveRun?.analysis ?? pipeline?.analysis;
   const liveExtraction = liveRun?.extraction;
   const liveOk = liveExtraction?.source === 'live' && !!liveRun?.analysis;
+  const manualReviewGate = decision === 'MANUAL_REVIEW' ? triggered[0] : null;
 
   let actionPill: { label: string; title: string } | null = null;
   if (userSigned) {
@@ -444,13 +446,36 @@ function ProposalCard({
 
       {decision && pipeline?.evaluation && (
         <div className="prop-decision">
-          <div className={`big-decision big-decision-${decision}`}>
-            <div className="big-decision-label">Recommendation</div>
-            <div className="big-decision-value">{decision.replace('_', ' ')}</div>
+          <div className={`big-decision big-decision-${decision} ${suggested ? `big-decision-lean-${suggested.decision}` : ''}`}>
+            <div className="big-decision-label">
+              {decision === 'MANUAL_REVIEW' ? 'Manual review required' : 'Recommendation'}
+            </div>
+            <div className="big-decision-value">
+              {decision === 'MANUAL_REVIEW' && suggested
+                ? `Lean ${suggested.decision}`
+                : decision.replace('_', ' ')}
+            </div>
             <div className="big-decision-meta">
-              {Math.round(conf * 100)}% confidence · {triggered.length} rule{triggered.length === 1 ? '' : 's'}
+              {decision === 'MANUAL_REVIEW' && suggested
+                ? `${Math.round(suggested.confidence * 100)}% vote lean · review gated · ${triggered.length} rule${triggered.length === 1 ? '' : 's'}`
+                : `${Math.round(conf * 100)}% confidence · ${triggered.length} rule${triggered.length === 1 ? '' : 's'}`}
             </div>
           </div>
+
+          {decision === 'MANUAL_REVIEW' && (
+            <div className="manual-review-note">
+              {manualReviewGate && (
+                <span>Gate <code>{manualReviewGate.id}</code></span>
+              )}
+              {suggested ? (
+                <span>
+                  Suggested {suggested.decision}: {suggested.reason}
+                </span>
+              ) : (
+                <span>No vote lean available for this review gate.</span>
+              )}
+            </div>
+          )}
 
           <div className="rules-toggle">
             <button className="link-btn" onClick={() => setShowRules((v) => !v)}>

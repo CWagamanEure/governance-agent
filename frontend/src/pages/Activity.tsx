@@ -307,6 +307,7 @@ function PendingCard({
   onDecide: () => void;
 }) {
   const summary = pending.pipeline.analysis?.summary ?? '(no summary available)';
+  const suggested = pending.pipeline.evaluation?.suggested_vote ?? null;
   return (
     <article className="activity-pending">
       <header className="activity-pending-head">
@@ -325,6 +326,11 @@ function PendingCard({
         <button className="btn primary" onClick={onDecide}>Decide</button>
       </header>
       <p className="activity-pending-summary">{summary}</p>
+      {suggested && (
+        <p className="activity-suggested">
+          Suggested {suggested.decision} · {Math.round(suggested.confidence * 100)}% lean · {suggested.reason}
+        </p>
+      )}
     </article>
   );
 }
@@ -344,6 +350,7 @@ function DecideModal({
 }) {
   const [picked, setPicked] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const suggested = pending.pipeline.evaluation?.suggested_vote ?? null;
   const choices: { num: number; label: ChoiceLabel; desc: string }[] = [
     { num: 1, label: 'FOR', desc: 'Sign a vote in support.' },
     { num: 2, label: 'AGAINST', desc: 'Sign a vote opposing.' },
@@ -358,9 +365,14 @@ function DecideModal({
           <button className="btn small" onClick={onCancel} aria-label="close">×</button>
         </header>
         <p className="muted tiny" style={{ marginTop: 8 }}>
-          Your agent flagged this for manual review. Pick how you want to vote — your wallet will sign the envelope inside the enclave. The decision blob will record this as a user override of the engine's MANUAL_REVIEW recommendation.
+          Your agent flagged this for manual review. Pick how you want to vote — your wallet will sign the envelope inside the enclave. The decision blob will record this as a user override of the engine's MANUAL_REVIEW gate.
         </p>
         <div className="modal-proposal-title">{pending.title ?? pending.proposalId}</div>
+        {suggested && (
+          <div className="activity-suggested modal-suggested">
+            Suggested {suggested.decision} · {Math.round(suggested.confidence * 100)}% lean · {suggested.reason}
+          </div>
+        )}
 
         <div className="decide-choices">
           {choices.map((c) => (
