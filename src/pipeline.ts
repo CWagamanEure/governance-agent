@@ -9,9 +9,13 @@
  *   - analysis?: optional pre-built ProposalAnalysis. If supplied, the LLM
  *                extraction is skipped. Useful when extraction is blocked
  *                (e.g. waiting on the gateway) or when re-running a decision.
- *   - profile?:  PolicyProfile to evaluate against. Defaults to DEFAULT_PROFILE.
+ *   - profile?:  PolicyProfile to evaluate against. Defaults to DEFAULT_PROFILE
+ *                only when the API layer explicitly allows default preview.
  *   - account?:  viem account that will sign the resulting vote. Omit to
  *                produce a decision without signing.
+ *   - forceLiveExtraction?: ignore caller analysis + DB cache and call the LLM.
+ *   - extractOnly?: stop after extraction; returns analysis + provenance but
+ *                   does not evaluate or sign a policy decision.
  *
  * Output: PipelineResult containing the analysis, the policy evaluation, an
  * optionally-signed vote envelope, and a deterministic markdown rationale that
@@ -36,7 +40,13 @@ import {
   getCachedAnalysis,
   upsertAnalysis,
 } from './db.js';
-import { decisionToChoice, signVote, type SignedVoteEnvelope } from './snapshot.js';
+import {
+  decisionToChoice,
+  signVote,
+  submitVote,
+  type SignedVoteEnvelope,
+  type SubmitResult,
+} from './snapshot.js';
 import { signDecisionBlob, type SignedDecisionBlob } from './decision-blob.js';
 
 // ---------------------------------------------------------------------------
@@ -60,11 +70,25 @@ export type PipelineInput = {
   proposal: SnapshotProposalRaw;
   analysis?: AnalysisForPolicy;
   profile?: PolicyProfileT;
+  forceLiveExtraction?: boolean;
+  extractOnly?: boolean;
   decisionAccount?: Account;
   voteAccount?: Account;
   userAddress?: Hex | null;
   // Backward-compatible shorthand: if supplied, signs both decision blob and vote.
   account?: Account;
+  // User override: if set, sign a vote with this Snapshot choice number
+  // (1=FOR, 2=AGAINST, 3=ABSTAIN) regardless of evaluation.decision. Used by
+  // the Activity tab when the user manually decides on a MANUAL_REVIEW item.
+  // The decision blob still records the evaluation's outcome; the override
+  // shows up in the rationale + vote envelope only.
+  override_choice?: number | null;
+  // Submit the signed vote envelope to Snapshot's sequencer. If false (the
+  // default), we sign-only — useful for previews, audit trails, and demos
+  // that shouldn't hit the live network. If true and submission fails (e.g.
+  // the signing wallet has no voting power on the proposal's snapshot
+  // block), the error surfaces in PipelineResult.submission.
+  submit?: boolean;
 };
 
 export type PipelineProposalRef = {
@@ -74,15 +98,32 @@ export type PipelineProposalRef = {
   state?: string;
 };
 
+export type PipelineExtraction = {
+  source: 'supplied' | 'cache' | 'live' | 'none';
+  schema_version: string;
+  route?: 'eigen-proxy' | 'anthropic-direct';
+  modelId?: string;
+  usage?: unknown;
+  bodyTruncated?: boolean;
+  cache?: {
+    model_name: string;
+    model_version: string;
+    extraction_confidence: number;
+    created_at: number;
+  };
+};
+
 export type PipelineResult = {
   proposal: PipelineProposalRef;
   analysis: AnalysisForPolicy | null;
+  extraction: PipelineExtraction;
   extraction_skipped: boolean;
   extraction_error?: string;
   evaluation: PolicyEvaluation | null;
   decision_blob: SignedDecisionBlob | null;
   decision_blob_error?: string;
   vote: { envelope: SignedVoteEnvelope; choice: number } | null;
+  submission: SubmitResult | null;
   rationale_md: string;
   pipeline_version: string;
 };
@@ -105,11 +146,19 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
   //   (a) caller-supplied analysis (FEATURED demo path / re-runs)
   //   (b) DB cache hit at the current EXTRACTION_SCHEMA_VERSION
   //   (c) fresh LLM call, then write through to cache
-  let analysis: AnalysisForPolicy | null = input.analysis ?? null;
+  //
+  // forceLiveExtraction intentionally bypasses both (a) and (b). That gives
+  // the UI a real "Run live in TEE" path without relying on the smoke-test
+  // endpoint.
+  let analysis: AnalysisForPolicy | null = input.forceLiveExtraction ? null : input.analysis ?? null;
   let extractionError: string | undefined;
   let extractionSkipped = analysis !== null;
+  let extraction: PipelineExtraction = {
+    source: analysis ? 'supplied' : 'none',
+    schema_version: EXTRACTION_SCHEMA_VERSION,
+  };
 
-  if (!analysis && input.proposal.id) {
+  if (!analysis && !input.forceLiveExtraction && input.proposal.id) {
     const cached = getCachedAnalysis(input.proposal.id, EXTRACTION_SCHEMA_VERSION);
     if (cached) {
       try {
@@ -119,6 +168,18 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
         parsed.extraction_confidence = cached.extraction_confidence;
         analysis = parsed;
         extractionSkipped = true;
+        extraction = {
+          source: 'cache',
+          schema_version: EXTRACTION_SCHEMA_VERSION,
+          route: cached.model_name === 'eigen-proxy' || cached.model_name === 'anthropic-direct' ? cached.model_name : undefined,
+          modelId: cached.model_version,
+          cache: {
+            model_name: cached.model_name,
+            model_version: cached.model_version,
+            extraction_confidence: cached.extraction_confidence,
+            created_at: cached.created_at,
+          },
+        };
       } catch {
         // Bad JSON in cache shouldn't be possible, but if so, fall through
         // to a fresh extraction rather than 500.
@@ -130,6 +191,15 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
     const result = await extractOne(input.proposal as Parameters<typeof extractOne>[0], 'sonnet');
     if (result.ok) {
       analysis = result.analysis;
+      extractionSkipped = false;
+      extraction = {
+        source: 'live',
+        schema_version: EXTRACTION_SCHEMA_VERSION,
+        route: result.meta.route,
+        modelId: result.meta.modelId,
+        usage: result.meta.usage,
+        bodyTruncated: result.meta.bodyTruncated,
+      };
       // Write through to the cache so subsequent visits are free. Best-effort:
       // the proposals table requires a row exist before we can insert into
       // proposal_analyses, so upsertProposal first.
@@ -163,6 +233,13 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
       }
     } else {
       extractionError = result.error;
+      extraction = {
+        source: 'none',
+        schema_version: EXTRACTION_SCHEMA_VERSION,
+        route: result.meta.route,
+        modelId: result.meta.modelId,
+        bodyTruncated: result.meta.bodyTruncated,
+      };
     }
   }
 
@@ -170,12 +247,29 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
     return {
       proposal: proposalRef,
       analysis: null,
+      extraction,
       extraction_skipped: false,
       extraction_error: extractionError,
       evaluation: null,
       decision_blob: null,
       vote: null,
+      submission: null,
       rationale_md: buildRationale({ proposal: proposalRef, analysis: null, evaluation: null, extractionError }),
+      pipeline_version: PIPELINE_VERSION,
+    };
+  }
+
+  if (input.extractOnly) {
+    return {
+      proposal: proposalRef,
+      analysis,
+      extraction,
+      extraction_skipped: extractionSkipped,
+      evaluation: null,
+      decision_blob: null,
+      vote: null,
+      submission: null,
+      rationale_md: buildRationale({ proposal: proposalRef, analysis, evaluation: null }),
       pipeline_version: PIPELINE_VERSION,
     };
   }
@@ -213,30 +307,65 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
     }
   }
 
-  // Step 4 — sign vote if (a) decision is auto-castable, (b) account provided,
-  // (c) we know which space to vote in.
+  // Step 4 — sign vote.
+  //
+  // Two paths:
+  //   (a) Auto-cast: evaluation.decision is FOR/AGAINST/ABSTAIN, no override.
+  //       The vote choice comes from the policy engine's decision.
+  //   (b) User override: caller supplied input.override_choice (1=FOR,
+  //       2=AGAINST, 3=ABSTAIN). Used by Activity-tab approvals where the
+  //       user manually decides on a MANUAL_REVIEW item. The decision blob
+  //       still records evaluation.decision (which would have been
+  //       MANUAL_REVIEW), so the override is auditable as a deliberate
+  //       human decision rather than rules-driven.
+  const overrideChoice = input.override_choice ?? null;
+  const isOverride = overrideChoice !== null;
+  const finalChoice = isOverride ? overrideChoice : choice;
   let vote: PipelineResult['vote'] = null;
+  let submission: SubmitResult | null = null;
   const voteAccount = input.voteAccount ?? input.account;
-  if (voteAccount && choice !== null && proposalRef.space) {
+  if (voteAccount && finalChoice !== null && proposalRef.space) {
+    const reason = isOverride
+      ? `gov-agent ${PIPELINE_VERSION}: user override (engine recommended ${evaluation.decision}, user signed choice ${finalChoice})`
+      : `gov-agent ${PIPELINE_VERSION}: ${evaluation.decision} (engine v${evaluation.engine_version})`;
     const envelope = await signVote({
       account: voteAccount,
       space: proposalRef.space,
       proposalId: input.proposal.id as Hex,
-      choice,
-      reason: `gov-agent ${PIPELINE_VERSION}: ${evaluation.decision} (engine v${evaluation.engine_version})`,
+      choice: finalChoice,
+      reason,
     });
-    vote = { envelope, choice };
+    vote = { envelope, choice: finalChoice };
+
+    // Step 5 — actually submit to Snapshot's sequencer if the caller asked
+    // for it. Sign-only is the default to keep dev-loop runs from polluting
+    // a real DAO's vote record. Errors surface in submission.error so the
+    // UI can show "no voting power" / "duplicate vote" / etc. without
+    // failing the whole pipeline.
+    if (input.submit === true) {
+      try {
+        submission = await submitVote(envelope);
+      } catch (e) {
+        submission = {
+          ok: false,
+          status: 0,
+          error: e instanceof Error ? e.message : String(e),
+        };
+      }
+    }
   }
 
   return {
     proposal: proposalRef,
     analysis,
+    extraction,
     extraction_skipped: extractionSkipped,
     evaluation,
     decision_blob: decisionBlob,
     decision_blob_error: decisionBlobError,
     vote,
-    rationale_md: buildRationale({ proposal: proposalRef, analysis, evaluation }),
+    submission,
+    rationale_md: buildRationale({ proposal: proposalRef, analysis, evaluation, isOverride, overrideChoice }),
     pipeline_version: PIPELINE_VERSION,
   };
 }
@@ -253,6 +382,8 @@ function buildRationale(args: {
   analysis: AnalysisForPolicy | null;
   evaluation: PolicyEvaluation | null;
   extractionError?: string;
+  isOverride?: boolean;
+  overrideChoice?: number | null;
 }): string {
   const md: string[] = [];
 
@@ -261,6 +392,10 @@ function buildRationale(args: {
   md.push(`- ID: \`${args.proposal.id}\``);
   if (args.proposal.space) md.push(`- Space: \`${args.proposal.space}\``);
   if (args.proposal.state) md.push(`- State: \`${args.proposal.state}\``);
+  if (args.isOverride && args.overrideChoice != null) {
+    const choiceLabel = args.overrideChoice === 1 ? 'FOR' : args.overrideChoice === 2 ? 'AGAINST' : args.overrideChoice === 3 ? 'ABSTAIN' : `choice ${args.overrideChoice}`;
+    md.push(`- **User override**: signed ${choiceLabel} after agent flagged for manual review`);
+  }
 
   if (args.extractionError) {
     md.push('');

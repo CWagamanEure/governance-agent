@@ -302,7 +302,12 @@ app.post('/vote/sign', async (c) => {
  *   {
  *     proposal:    <full Snapshot proposal JSON>,
  *     analysis?:   <pre-built ProposalAnalysis to skip LLM extraction>,
- *     profile?:    <PolicyProfileT, defaults to DEFAULT_PROFILE>,
+ *     profile?:    <PolicyProfileT>,
+ *     preview_default_policy?: false, // authenticated users must opt in to
+ *                                    // default-policy preview when no saved
+ *                                    // profile exists
+ *     force_live_extraction?: false,  // bypass supplied analysis + DB cache
+ *     extract_only?: false,           // return analysis/provenance only
  *     sign?:       false   // if true, sign with the enclave wallet when
  *                          // decision is FOR/AGAINST/ABSTAIN
  *   }
@@ -332,6 +337,13 @@ app.post('/pipeline/run', async (c) => {
   const analysis = body?.analysis as AnalysisForPolicy | undefined;
   const bodyProfile = body?.profile as PolicyProfileT | undefined;
   const shouldSign = body?.sign === true;
+  const previewDefaultPolicy = body?.preview_default_policy === true;
+  const forceLiveExtraction = body?.force_live_extraction === true;
+  const extractOnly = body?.extract_only === true;
+  const rawOverride = body?.override_choice;
+  const overrideChoice =
+    rawOverride === 1 || rawOverride === 2 || rawOverride === 3 ? rawOverride : null;
+  const submitToSnapshot = body?.submit === true;
 
   // If authenticated:
   //   - sign with the user's deterministically-derived per-user wallet
@@ -342,16 +354,32 @@ app.post('/pipeline/run', async (c) => {
   const authedAddr = getAuthedAddress(c);
 
   let effectiveProfile: PolicyProfileT | undefined = bodyProfile;
+  let missingAuthedProfile = false;
   if (authedAddr && !effectiveProfile) {
     const user = findOrCreateUser(authedAddr);
     const stored = getLatestProfile(user.id);
     if (stored) effectiveProfile = JSON.parse(stored.profile_json);
+    else missingAuthedProfile = true;
+  }
+
+  if (missingAuthedProfile && !extractOnly) {
+    if (!previewDefaultPolicy || shouldSign || submitToSnapshot) {
+      return c.json(
+        {
+          error: 'no_profile',
+          code: 'no_profile',
+          message:
+            'Authenticated users must save a policy before requesting recommendations. Use extract_only=true for live TEE extraction without policy evaluation, or preview_default_policy=true for an unsigned default-policy preview.',
+        },
+        409,
+      );
+    }
   }
 
   let decisionAccount;
   let voteAccount;
   try {
-    decisionAccount = authedAddr ? userWallet(authedAddr as `0x${string}`) : walletAccount();
+    decisionAccount = extractOnly ? undefined : authedAddr ? userWallet(authedAddr as `0x${string}`) : walletAccount();
     if (shouldSign) voteAccount = decisionAccount;
   } catch (e: any) {
     if (shouldSign) {
@@ -364,9 +392,13 @@ app.post('/pipeline/run', async (c) => {
     proposal,
     analysis,
     profile: effectiveProfile,
+    forceLiveExtraction,
+    extractOnly,
     decisionAccount,
     voteAccount,
     userAddress: authedAddr as `0x${string}` | null,
+    override_choice: overrideChoice,
+    submit: submitToSnapshot,
   });
 
   // bigint timestamps in vote envelopes don't JSON-serialize natively
