@@ -87,6 +87,7 @@ function Dashboard({ tab }: { tab: Tab }) {
   const [profile, setProfile] = useState<StoredProfile | null>(null);
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [demoProgress, setDemoProgress] = useState(() => readDemoProgress());
+  const [demoResetVersion, setDemoResetVersion] = useState(0);
   const { info, error } = useBackendInfo();
 
   useEffect(() => {
@@ -147,7 +148,11 @@ function Dashboard({ tab }: { tab: Tab }) {
   function resetDemoProgress() {
     const next = { liveInferenceRun: false };
     writeDemoProgress(next);
+    if (auth.status === 'authed') {
+      clearRecentActivity(auth.address);
+    }
     setDemoProgress(next);
+    setDemoResetVersion((v) => v + 1);
   }
 
   const hasProfile = !!profile?.profile;
@@ -182,6 +187,7 @@ function Dashboard({ tab }: { tab: Tab }) {
 
         {auth.status !== 'loading' && tab === 'activity' && (
           <Activity
+            key={`activity-${demoResetVersion}`}
             auth={auth}
             hasProfile={hasProfile}
             onSignIn={handleSignIn}
@@ -190,6 +196,7 @@ function Dashboard({ tab }: { tab: Tab }) {
 
         {auth.status !== 'loading' && tab === 'proposals' && (
           <Proposals
+            key={`proposals-${demoResetVersion}`}
             auth={auth}
             hasProfile={hasProfile}
             profileLoaded={profileReady}
@@ -222,6 +229,10 @@ type DemoProgress = {
 
 const DEMO_PROGRESS_KEY = 'gov-agent:demo-progress:v1';
 
+function recentActivityKey(address: string): string {
+  return `gov-agent:recent-activity:${address.toLowerCase()}`;
+}
+
 function readDemoProgress(): DemoProgress {
   try {
     const parsed = JSON.parse(localStorage.getItem(DEMO_PROGRESS_KEY) ?? '{}');
@@ -236,6 +247,14 @@ function writeDemoProgress(progress: DemoProgress) {
     localStorage.setItem(DEMO_PROGRESS_KEY, JSON.stringify(progress));
   } catch {
     // Demo progress is cosmetic; ignore storage failures.
+  }
+}
+
+function clearRecentActivity(address: string) {
+  try {
+    localStorage.removeItem(recentActivityKey(address));
+  } catch {
+    // Demo reset is cosmetic; ignore storage failures.
   }
 }
 
@@ -308,7 +327,13 @@ function DemoGuide({
           <div className="dft-label">Demo path</div>
           <strong>{doneCount}/4 ready</strong>
         </div>
-        <button className="link-btn demo-reset" onClick={onReset}>reset</button>
+        <button
+          className="link-btn demo-reset"
+          onClick={onReset}
+          title="Clear live-inference progress and browser-local signed activity"
+        >
+          Reset demo
+        </button>
       </div>
       <div className="demo-guide-steps">
         {steps.map((step, i) => (
