@@ -5,9 +5,12 @@ dist/
 .DS_Store
 .idea/
 .vscode/
-data/
+/data/
 *.log
 
 # Private to the local checkout, not committed publicly.
 PLAN.md
 EIGEN_GATEWAY_DEBUG.md
+DEMO_SCRIPT.md
+EIGEN_FOLLOWUP.md
+demo.md
