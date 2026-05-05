@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   BACKEND_URL,
+  EIGEN_APP_ID,
   getAttestation,
   getProfile,
   getPublicEnv,
@@ -157,7 +158,12 @@ function Dashboard({ tab }: { tab: Tab }) {
         )}
 
         {auth.status !== 'loading' && tab === 'proposals' && (
-          <Proposals auth={auth} onSignIn={handleSignIn} />
+          <Proposals
+            auth={auth}
+            hasProfile={!!profile?.profile}
+            profileLoaded={profileLoaded || auth.status === 'anonymous'}
+            onSignIn={handleSignIn}
+          />
         )}
 
         {auth.status !== 'loading' && tab === 'policy' && (
@@ -172,7 +178,7 @@ function Dashboard({ tab }: { tab: Tab }) {
         )}
       </main>
 
-      <DashFooter info={info} />
+      <DashFooter info={info} error={error} />
     </div>
   );
 }
@@ -269,6 +275,7 @@ function TrustRibbon({ info, error }: { info: BackendInfo | null; error: string 
     );
   }
 
+  const verifyUrl = eigenVerifyUrl(info.env);
   return (
     <div className="trust-ribbon">
       <span className="t-dot" />
@@ -277,7 +284,7 @@ function TrustRibbon({ info, error }: { info: BackendInfo | null; error: string 
         <code>{shortAddr(info.wallet.address)}</code>
       </span>
       <a
-        href="https://verify-sepolia.eigencloud.xyz/app/0xA2090Bc33B35E7b9dD1EEEA86Fc117263Bd1cd9D"
+        href={verifyUrl}
         target="_blank"
         rel="noreferrer"
         className="trust-link"
@@ -288,39 +295,77 @@ function TrustRibbon({ info, error }: { info: BackendInfo | null; error: string 
   );
 }
 
+function TEEProofPanel({ info, error }: { info: BackendInfo | null; error: string | null }) {
+  if (error) return null;
+
+  const env = info?.env ?? {};
+  const attestation = info?.attestation;
+  const machine = env.EIGEN_MACHINE_TYPE_PUBLIC;
+  const isTee = Boolean(machine);
+  const evidenceOk = attestation?.bound_evidence?.ok;
+  const kmsOk = attestation?.kms_jwt?.ok;
+  const imageDigest = attestation?.kms_jwt?.decoded?.submods?.container?.image_digest;
+  const appId = eigenAppId(env);
+  const verifyUrl = eigenVerifyUrl(env);
+  const attestationLabel = attestation
+    ? `${attestation.status}${evidenceOk === false || kmsOk === false ? ' · check failed' : ' · evidence ok'}`
+    : 'loading';
+
+  return (
+    <section className="tee-proof">
+      <div className="tee-proof-inner">
+        <div className="tee-proof-title">
+          <span className={`t-dot ${isTee ? '' : 'warn'}`} />
+          <div>
+            <div className="dft-label">TEE proof</div>
+            <strong>{isTee ? 'Eigen mainnet-alpha' : 'Local backend'}</strong>
+          </div>
+        </div>
+
+        <div className="tee-proof-grid">
+          <ProofItem label="App ID" value={shortAddr(appId)} title={appId} />
+          <ProofItem label="Wallet" value={info?.wallet.address ? shortAddr(info.wallet.address) : 'loading'} title={info?.wallet.address} />
+          <ProofItem label="Machine" value={machine ?? 'not attested'} />
+          <ProofItem label="Commit" value={env.GIT_COMMIT_PUBLIC ? env.GIT_COMMIT_PUBLIC.slice(0, 10) : 'unknown'} title={env.GIT_COMMIT_PUBLIC} />
+          <ProofItem label="Model route" value={isTee ? 'eigen-proxy' : 'backend default'} />
+          <ProofItem label="Model" value={isTee ? 'claude-sonnet-4.6' : 'configured'} />
+          <ProofItem label="Attestation" value={attestationLabel} title={imageDigest} />
+          <a
+            className="proof-item proof-item-link"
+            href="https://github.com/CWagamanEure/governance-agent"
+            target="_blank"
+            rel="noreferrer"
+          >
+            <span>Source</span>
+            <code>GitHub ↗</code>
+          </a>
+        </div>
+
+        <a href={verifyUrl} target="_blank" rel="noreferrer" className="trust-link tee-proof-link">
+          verify ↗
+        </a>
+      </div>
+    </section>
+  );
+}
+
+function ProofItem({ label, value, title }: { label: string; value: string; title?: string }) {
+  return (
+    <div className="proof-item" title={title}>
+      <span>{label}</span>
+      <code>{value}</code>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Footer
 // ---------------------------------------------------------------------------
 
-function DashFooter({ info }: { info: BackendInfo | null }) {
-  if (!info) return null;
+function DashFooter({ info, error }: { info: BackendInfo | null; error: string | null }) {
   return (
     <footer className="dash-footer">
-      <div className="dash-footer-grid">
-        <div>
-          <div className="dft-label">Agent wallet</div>
-          <code>{info.wallet.address}</code>
-        </div>
-        <div>
-          <div className="dft-label">Source</div>
-          <a href="https://github.com/CWagamanEure/governance-agent" target="_blank" rel="noreferrer">
-            github.com/CWagamanEure/governance-agent ↗
-          </a>
-        </div>
-        <div>
-          <div className="dft-label">Verify</div>
-          <a
-            href="https://verify-sepolia.eigencloud.xyz/app/0xA2090Bc33B35E7b9dD1EEEA86Fc117263Bd1cd9D"
-            target="_blank"
-            rel="noreferrer"
-          >
-            verify-sepolia.eigencloud.xyz ↗
-          </a>
-        </div>
-      </div>
-      <p className="tiny" style={{ textAlign: 'center', color: 'var(--fg-soft)', marginTop: 24 }}>
-        Open source · alpha · not recommended for customer funds
-      </p>
+      <TEEProofPanel info={info} error={error} />
     </footer>
   );
 }
@@ -331,4 +376,12 @@ function DashFooter({ info }: { info: BackendInfo | null }) {
 
 function shortAddr(addr: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
+
+function eigenAppId(env: Record<string, string>): string {
+  return env.EIGEN_APP_ID_PUBLIC || EIGEN_APP_ID;
+}
+
+function eigenVerifyUrl(env: Record<string, string>): string {
+  return `https://verify.eigencloud.xyz/app/${eigenAppId(env)}`;
 }

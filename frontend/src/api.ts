@@ -3,8 +3,16 @@
  * (Hono running inside the EigenCompute TEE) and to Snapshot's GraphQL.
  */
 
+const DEFAULT_BACKEND_URL =
+  typeof window !== 'undefined' && window.location?.origin
+    ? window.location.origin
+    : 'http://127.0.0.1:8000';
+
 export const BACKEND_URL =
-  (import.meta.env.VITE_BACKEND_URL as string | undefined) ?? 'http://34.34.16.46:8000';
+  (import.meta.env.VITE_BACKEND_URL as string | undefined) ?? DEFAULT_BACKEND_URL;
+
+export const EIGEN_APP_ID = '0xc9645B5C0A942e4dE16525513FE36D48DA7D911d';
+export const EIGEN_VERIFY_URL = `https://verify.eigencloud.xyz/app/${EIGEN_APP_ID}`;
 
 export const SNAPSHOT_GQL = 'https://hub.snapshot.org/graphql';
 
@@ -16,9 +24,32 @@ export type Health = { ok: boolean; version: string };
 export type WalletInfo = { address: string; derivation_path: string };
 export type AttestationStub = {
   status: string;
-  note: string;
-  public_env: Record<string, string>;
-  wallet_address: string | null;
+  note?: string;
+  generated_at?: number;
+  public_env?: Record<string, string>;
+  wallet_address?: string | null;
+  app?: {
+    name?: string;
+    version?: string;
+    wallet_address?: string;
+    public_env?: Record<string, string>;
+  };
+  bound_evidence?: {
+    ok?: boolean;
+    evidence_sha256?: string;
+  };
+  kms_jwt?: {
+    ok?: boolean;
+    decoded?: {
+      sub?: string;
+      submods?: {
+        container?: {
+          image_digest?: string;
+          image_reference?: string;
+        };
+      };
+    };
+  };
 };
 
 export type Decision = 'FOR' | 'AGAINST' | 'ABSTAIN' | 'MANUAL_REVIEW';
@@ -59,15 +90,34 @@ export type SignedVoteEnvelope = {
   };
 };
 
+export type SubmissionResult =
+  | { ok: true; receipt: any }
+  | { ok: false; status: number; error: string };
+
 export type PipelineResult = {
   proposal: { id: string; title?: string; space?: string; state?: string };
   analysis: any | null;
+  extraction: {
+    source: 'supplied' | 'cache' | 'live' | 'none';
+    schema_version: string;
+    route?: 'eigen-proxy' | 'anthropic-direct';
+    modelId?: string;
+    usage?: any;
+    bodyTruncated?: boolean;
+    cache?: {
+      model_name: string;
+      model_version: string;
+      extraction_confidence: number;
+      created_at: number;
+    };
+  };
   extraction_skipped: boolean;
   extraction_error?: string;
   evaluation: PolicyEvaluation | null;
   decision_blob: any | null;
   decision_blob_error?: string;
   vote: { envelope: SignedVoteEnvelope; choice: number } | null;
+  submission: SubmissionResult | null;
   rationale_md: string;
   pipeline_version: string;
 };
@@ -102,6 +152,21 @@ export async function runPipeline(args: {
   profile?: any;
   sign?: boolean;
   token?: string | null;
+  // Bypass caller analysis and DB cache, then call the configured model route.
+  force_live_extraction?: boolean;
+  // Return extraction + provenance without policy evaluation/signing.
+  extract_only?: boolean;
+  // Authenticated no-profile users must opt into default-policy preview.
+  preview_default_policy?: boolean;
+  // Optional Snapshot choice number (1=FOR, 2=AGAINST, 3=ABSTAIN). When set
+  // and sign=true, the backend signs the vote with this choice instead of
+  // the policy engine's recommendation. Used by the Activity tab to record
+  // a user override on a MANUAL_REVIEW item.
+  override_choice?: number;
+  // When true, the backend POSTs the signed vote envelope to Snapshot's
+  // sequencer. Default is sign-only — useful for previews and demos that
+  // shouldn't pollute live DAO records.
+  submit?: boolean;
 }): Promise<PipelineResult> {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (args.token) headers.authorization = `Bearer ${args.token}`;
@@ -112,7 +177,15 @@ export async function runPipeline(args: {
     body: JSON.stringify(body),
   });
   if (!r.ok) {
-    throw new Error(`pipeline error: ${r.status} ${await r.text()}`);
+    const text = await r.text();
+    let message = `pipeline error: ${r.status} ${text}`;
+    try {
+      const parsed = JSON.parse(text);
+      message = parsed.message ?? parsed.error ?? `pipeline error: ${r.status}`;
+    } catch {
+      // Keep the raw text fallback.
+    }
+    throw new Error(message);
   }
   return r.json();
 }

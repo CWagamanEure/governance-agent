@@ -7,6 +7,8 @@
 
 export type DemoProposal = {
   id: string;             // Snapshot bytes32 id
+  label?: string;
+  tag?: string;
   // Optional pre-built analysis. If supplied, the backend skips LLM extraction.
   analysis?: any;
 };
@@ -14,6 +16,8 @@ export type DemoProposal = {
 export const FEATURED: DemoProposal[] = [
   {
     id: '0x008f190725018c3db0e6464bf31d44f09a4d7773fd1486dff0c52c27b8aba289',
+    label: 'Delegate incentives',
+    tag: 'Meta-governance',
     analysis: {
       category: 'META_GOVERNANCE',
       summary:
@@ -93,5 +97,15 @@ export const FEATURED: DemoProposal[] = [
       },
       extraction_confidence: 0.9,
     },
+  },
+  {
+    id: '0x25877ad1de4b9232af7a744dbd9ffb1b023c385aaf15c96c5b016859926416a2',
+    label: 'Treasury ETH strategy',
+    tag: 'Treasury',
+  },
+  {
+    id: '0x12bad84219d04c54cd72231ad8fe883499e85c14762919a06aaa7a251d64b8da',
+    label: 'Council elections',
+    tag: 'Elections',
   },
 ];

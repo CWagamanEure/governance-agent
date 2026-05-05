@@ -9,7 +9,9 @@
  */
 
 import { existsSync } from 'node:fs';
-import { Hono } from 'hono';
+import { readFile } from 'node:fs/promises';
+import { extname, resolve, sep } from 'node:path';
+import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
 
@@ -63,6 +65,22 @@ import { buildAttestationReport } from './attestation.js';
 
 const VERSION = '0.2.0';
 const WALLET_PATH = "m/44'/60'/0'/0/0"; // viem default, documented for responses
+const FRONTEND_DIST_DIR = process.env.FRONTEND_DIST_DIR ?? 'frontend/dist';
+
+const MIME_TYPES: Record<string, string> = {
+  '.css': 'text/css; charset=utf-8',
+  '.html': 'text/html; charset=utf-8',
+  '.ico': 'image/x-icon',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.txt': 'text/plain; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+};
 
 function walletAccount() {
   const mnemonic = process.env.MNEMONIC;
@@ -83,6 +101,29 @@ function publicEnv(): Record<string, string> {
     }
   }
   return out;
+}
+
+async function serveFrontendFile(c: Context, relativePath: string) {
+  const root = resolve(FRONTEND_DIST_DIR);
+  const requested = resolve(root, relativePath);
+  if (requested !== root && !requested.startsWith(root + sep)) {
+    return c.json({ error: 'not found' }, 404);
+  }
+
+  try {
+    const data = await readFile(requested);
+    const contentType = MIME_TYPES[extname(requested)] ?? 'application/octet-stream';
+    const headers = {
+      'content-type': contentType,
+      'cache-control': relativePath.startsWith('assets/')
+        ? 'public, max-age=31536000, immutable'
+        : 'no-cache',
+    };
+    const body = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+    return c.body(body, 200, headers);
+  } catch {
+    return c.json({ error: 'not found' }, 404);
+  }
 }
 
 class HttpError extends Error {
@@ -800,6 +841,16 @@ app.get('/attestation', async (c) => {
   });
   return c.json(report);
 });
+
+if (existsSync(resolve(FRONTEND_DIST_DIR, 'index.html'))) {
+  console.log(`[governance-agent] serving frontend from ${FRONTEND_DIST_DIR}`);
+
+  app.get('/assets/*', (c) => serveFrontendFile(c, c.req.path.slice(1)));
+  app.get('/favicon.ico', (c) => serveFrontendFile(c, 'favicon.ico'));
+  app.get('/manifest.webmanifest', (c) => serveFrontendFile(c, 'manifest.webmanifest'));
+  app.get('/', (c) => serveFrontendFile(c, 'index.html'));
+  app.get('/*', (c) => serveFrontendFile(c, 'index.html'));
+}
 
 const port = Number(process.env.PORT ?? 8000);
 console.log(`[governance-agent] starting on :${port}`);
