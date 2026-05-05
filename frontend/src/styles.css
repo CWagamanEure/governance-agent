@@ -1905,6 +1905,11 @@ input[type="range"] {
   margin-bottom: 28px;
 }
 
+.activity-queue-note {
+  margin-top: -4px;
+  margin-bottom: 12px;
+}
+
 .activity-pending {
   background: var(--bg-elev);
   border: 1px solid var(--border);

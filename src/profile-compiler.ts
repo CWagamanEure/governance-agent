@@ -81,12 +81,12 @@ Example 4 — user is conservative across the board:
 CONSTRAINTS ON OTHER FIELDS:
 
 - stated_values: each entry is one declarative sentence in the user's own voice, paraphrased only for clarity. Do NOT invent values they didn't express.
-- default_action: 'MANUAL_REVIEW' unless the user explicitly wants ABSTAIN-as-default ("if you can't decide, just abstain").
+- default_action: 'MANUAL_REVIEW' unless the user explicitly wants ABSTAIN-as-default ("if you can't decide, just abstain"). If you choose ABSTAIN as the default, still emit explicit narrow FOR/AGAINST rules where calibration supports them; do not make ABSTAIN carry the whole policy.
 - manual_review_categories: ALWAYS include 'CONTRACT_UPGRADE' and 'OWNERSHIP_TRANSFER'. Add 'TOKENOMICS' if user mentions emissions/buybacks/token supply. Add 'TREASURY_SPEND' if user mentions large/recurring spend skepticism. Add 'META_GOVERNANCE' if user mentions governance process or delegate compensation skepticism. Add 'PARTNERSHIP' if user mentions concentration/decentralization concerns.
 - manual_review_flags: ALWAYS include 'LOW_CONFIDENCE_EXTRACTION', 'UNKNOWN_TREASURY_AMOUNT', 'LARGE_TREASURY_SPEND', 'CONTRACT_UPGRADE', 'OWNERSHIP_OR_PERMISSION_CHANGE', 'CONSTITUTIONAL_CHANGE', 'UNCLEAR_BENEFICIARIES', 'UNKNOWN_RECIPIENT'. Additionally include 'SINGLE_RECIPIENT_TREASURY' and 'NO_MILESTONES' if user mentions accountability or recipient-identifiability concerns.
 - author_blocklist: empty unless the user named specific addresses.
 - hard_rules:
-    * max_single_recipient_treasury_usd: set if user expressed any cap-on-single-recipient preference, otherwise null.
+    * max_single_recipient_treasury_usd: set if user expressed any cap-on-single-recipient preference. If values or calibration show skepticism of large, vague, lump-sum, no-milestone, or single-recipient treasury actions, infer a conservative cap from calibration instead of leaving this null.
     * vote_against_emission_increases: true unless user explicitly wants emission growth.
     * require_milestones_for_treasury: true unless user is explicitly permissive on milestones.
 

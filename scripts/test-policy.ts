@@ -125,6 +125,21 @@ const A_SINGLE_RECIPIENT_OVER_CAP: AnalysisForPolicy = {
   },
 };
 
+const A_TREASURY_NO_MILESTONES_SINGLE_RECIPIENT: AnalysisForPolicy = {
+  ...A_LARGE_TREASURY,
+  summary: 'Large treasury transfer to one custodian with no milestone gate.',
+  financial: {
+    ...A_LARGE_TREASURY.financial,
+    treasury_spend_usd: 150_000,
+    recipient_count: 1,
+    single_recipient: true,
+  },
+  execution: {
+    ...A_LARGE_TREASURY.execution,
+    has_milestones: false,
+  },
+};
+
 const A_NO_MILESTONES: AnalysisForPolicy = {
   ...A_ROUTINE_GRANT,
   execution: {
@@ -256,7 +271,7 @@ const TESTS: TestCase[] = [
     analysis: A_LARGE_TREASURY,
     expect: 'MANUAL_REVIEW',
     expectRule: 'review_large_treasury_spend',
-    expectSuggested: 'ABSTAIN',
+    expectSuggested: 'AGAINST',
   },
   {
     name: 'low extraction confidence -> MANUAL_REVIEW',
@@ -307,6 +322,23 @@ const TESTS: TestCase[] = [
     expectSuggested: 'FOR',
   },
   {
+    name: 'broad treasury review gate exposes risk AGAINST lean',
+    profile: {
+      ...DEFAULT_PROFILE,
+      default_action: 'ABSTAIN',
+      manual_review_categories: [...DEFAULT_PROFILE.manual_review_categories, 'TREASURY_SPEND'],
+      large_treasury_usd: 50_000,
+      hard_rules: {
+        ...DEFAULT_PROFILE.hard_rules,
+        max_single_recipient_treasury_usd: null,
+      },
+    },
+    analysis: A_TREASURY_NO_MILESTONES_SINGLE_RECIPIENT,
+    expect: 'MANUAL_REVIEW',
+    expectRule: 'manual_review_treasury_spend',
+    expectSuggested: 'AGAINST',
+  },
+  {
     name: 'routine accountable grant -> FOR',
     profile: DEFAULT_PROFILE,
     analysis: A_ROUTINE_GRANT,
@@ -319,7 +351,7 @@ const TESTS: TestCase[] = [
     analysis: A_NO_MILESTONES,
     expect: 'MANUAL_REVIEW',
     expectRule: 'hard_review_treasury_without_milestones',
-    expectSuggested: 'ABSTAIN',
+    expectSuggested: 'AGAINST',
   },
   {
     name: 'single-recipient grant over hard cap -> AGAINST',

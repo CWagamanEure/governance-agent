@@ -13,6 +13,7 @@ import {
   type PipelineResult,
 } from '../api';
 import { getStoredToken } from '../lib/auth';
+import { suggestedVoteLabel, suggestedVoteMeta } from '../lib/decision';
 import { FEATURED } from '../data';
 import { Card, ConnectGate, EmptyState, SectionHeading } from './Activity';
 
@@ -452,12 +453,12 @@ function ProposalCard({
             </div>
             <div className="big-decision-value">
               {decision === 'MANUAL_REVIEW' && suggested
-                ? `Lean ${suggested.decision}`
+                ? suggestedVoteLabel(suggested)
                 : decision.replace('_', ' ')}
             </div>
             <div className="big-decision-meta">
               {decision === 'MANUAL_REVIEW' && suggested
-                ? `${Math.round(suggested.confidence * 100)}% vote lean · review gated · ${triggered.length} rule${triggered.length === 1 ? '' : 's'}`
+                ? `${suggestedVoteMeta(suggested)} · ${triggered.length} rule${triggered.length === 1 ? '' : 's'}`
                 : `${Math.round(conf * 100)}% confidence · ${triggered.length} rule${triggered.length === 1 ? '' : 's'}`}
             </div>
           </div>
@@ -469,7 +470,7 @@ function ProposalCard({
               )}
               {suggested ? (
                 <span>
-                  Suggested {suggested.decision}: {suggested.reason}
+                  {suggestedVoteLabel(suggested)}: {suggested.reason}
                 </span>
               ) : (
                 <span>No vote lean available for this review gate.</span>

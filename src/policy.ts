@@ -172,7 +172,7 @@ type EvalContext = {
 // Engine
 // ---------------------------------------------------------------------------
 
-export const ENGINE_VERSION = '0.2.1';
+export const ENGINE_VERSION = '0.2.2';
 const HARD_PRIORITY_THRESHOLD = 500;
 const DEFAULT_EXTRACTION_CONFIDENCE = 0.9;
 const LOW_CONFIDENCE_THRESHOLD = 0.75;
@@ -335,6 +335,62 @@ function fallbackVoteForReviewGate(
   };
 }
 
+function treasuryLike(analysis: AnalysisForPolicy): boolean {
+  return (
+    analysis.category === 'TREASURY_SPEND' ||
+    analysis.category === 'GRANT' ||
+    (analysis.financial.treasury_spend_usd ?? 0) > 0
+  );
+}
+
+function riskLeanAgainstForReviewGate(
+  gateRule: Rule,
+  ctx: EvalContext,
+  extractionConfidence: number,
+): SuggestedVote | null {
+  const analysis = ctx.analysis;
+  const reasons: string[] = [];
+  const amount = analysis.financial.treasury_spend_usd;
+  const largeThreshold = ctx.profile.large_treasury_usd;
+
+  if (treasuryLike(analysis)) {
+    if (amount == null && ctx.profile.manual_review_flags.includes('UNKNOWN_TREASURY_AMOUNT')) {
+      reasons.push('treasury value is unknown');
+    } else if (largeThreshold != null && amount != null && amount > largeThreshold) {
+      reasons.push(`treasury value exceeds $${largeThreshold.toLocaleString()} review threshold`);
+    }
+
+    if (analysis.execution.has_milestones === false) {
+      reasons.push('no milestone gate');
+    }
+
+    if (analysis.financial.recipient_count === 1 || analysis.financial.single_recipient === true) {
+      reasons.push('single recipient or custodian');
+    }
+
+    if (analysis.execution.reversible === false && !analysis.execution.has_clawback) {
+      reasons.push('irreversible with no clawback');
+    }
+  }
+
+  if (
+    analysis.beneficiaries.unclear_beneficiaries ||
+    analysis.beneficiaries.primary_scope === 'UNKNOWN'
+  ) {
+    reasons.push('beneficiaries are unclear');
+  }
+
+  if (reasons.length === 0) return null;
+
+  return {
+    decision: 'AGAINST',
+    confidence: clamp01(extractionConfidence * (uncertaintyReviewGate(gateRule) ? 0.42 : 0.56)),
+    reason: `risk signals favor AGAINST pending review: ${reasons.slice(0, 3).join('; ')}`,
+    source: 'review_gate',
+    rule_id: gateRule.id,
+  };
+}
+
 function suggestedVoteFromScores(
   scores: Record<Decision, number>,
   extractionConfidence: number,
@@ -364,13 +420,15 @@ function suggestedVoteForManualReview(
   extractionConfidence: number,
 ): SuggestedVote | null {
   if (uncertaintyReviewGate(gateRule)) {
-    return fallbackVoteForReviewGate(gateRule, ctx, extractionConfidence);
+    return riskLeanAgainstForReviewGate(gateRule, ctx, extractionConfidence) ??
+      fallbackVoteForReviewGate(gateRule, ctx, extractionConfidence);
   }
 
   for (const rule of hardRules) {
     const action = rule.then.action;
     if (rule.priority >= gateRule.priority) continue;
     if (!isVoteDecision(action)) continue;
+    if (rule.id === 'default_action') continue;
     if (!predicateMatches(rule.when, ctx)) continue;
 
     const source = rule.id === 'default_action' ? 'default_action' : 'policy_rule';
@@ -388,6 +446,9 @@ function suggestedVoteForManualReview(
       rule_id: rule.id,
     };
   }
+
+  const riskLean = riskLeanAgainstForReviewGate(gateRule, ctx, extractionConfidence);
+  if (riskLean) return riskLean;
 
   const { scores } = scoreSoftRules(softRules, ctx);
   return suggestedVoteFromScores(scores, extractionConfidence) ??

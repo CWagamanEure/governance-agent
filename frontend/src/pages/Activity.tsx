@@ -25,6 +25,7 @@ import {
   type PipelineResult,
 } from '../api';
 import { getStoredToken } from '../lib/auth';
+import { suggestedVoteLabel, suggestedVoteMeta } from '../lib/decision';
 import { FEATURED } from '../data';
 
 type AuthState =
@@ -244,6 +245,9 @@ function ActivityAuthed({ address }: { address: string }) {
   return (
     <>
       <SectionHeading>Pending approvals</SectionHeading>
+      <p className="muted tiny activity-queue-note">
+        Review-gated active and featured proposals appear here until you sign or submit a choice.
+      </p>
       {error && <div className="modal-error" style={{ marginBottom: 12 }}>{error}</div>}
       {visiblePending === null ? (
         <Card>
@@ -328,7 +332,7 @@ function PendingCard({
       <p className="activity-pending-summary">{summary}</p>
       {suggested && (
         <p className="activity-suggested">
-          Suggested {suggested.decision} · {Math.round(suggested.confidence * 100)}% lean · {suggested.reason}
+          {suggestedVoteLabel(suggested)} · {suggestedVoteMeta(suggested)} · {suggested.reason}
         </p>
       )}
     </article>
@@ -370,7 +374,7 @@ function DecideModal({
         <div className="modal-proposal-title">{pending.title ?? pending.proposalId}</div>
         {suggested && (
           <div className="activity-suggested modal-suggested">
-            Suggested {suggested.decision} · {Math.round(suggested.confidence * 100)}% lean · {suggested.reason}
+            {suggestedVoteLabel(suggested)} · {suggestedVoteMeta(suggested)} · {suggested.reason}
           </div>
         )}
 
