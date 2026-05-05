@@ -264,7 +264,7 @@ const TESTS: TestCase[] = [
     analysis: A_LOW_CONFIDENCE,
     expect: 'MANUAL_REVIEW',
     expectRule: 'low_conf_guard',
-    expectSuggested: null,
+    expectSuggested: 'ABSTAIN',
   },
   {
     name: 'low field confidence -> MANUAL_REVIEW',
@@ -272,7 +272,7 @@ const TESTS: TestCase[] = [
     analysis: A_LOW_FIELD_CONFIDENCE,
     expect: 'MANUAL_REVIEW',
     expectRule: 'low_confidence_policy_inputs',
-    expectSuggested: null,
+    expectSuggested: 'ABSTAIN',
   },
   {
     name: 'LLM flagged ambiguous -> MANUAL_REVIEW',
@@ -280,7 +280,20 @@ const TESTS: TestCase[] = [
     analysis: A_LLM_FLAGGED,
     expect: 'MANUAL_REVIEW',
     expectRule: 'llm_flagged_ambiguous',
-    expectSuggested: null,
+    expectSuggested: 'ABSTAIN',
+  },
+  {
+    name: 'review-only default still exposes a provisional lean',
+    profile: {
+      ...DEFAULT_PROFILE,
+      default_action: 'MANUAL_REVIEW',
+      category_defaults: [],
+      delegation_rules: [],
+    },
+    analysis: A_ROUTINE_GRANT,
+    expect: 'MANUAL_REVIEW',
+    expectRule: 'default_action',
+    expectSuggested: 'ABSTAIN',
   },
   {
     name: 'manual-review gate still exposes lower vote rule lean',

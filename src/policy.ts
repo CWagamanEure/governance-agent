@@ -138,7 +138,7 @@ export type SuggestedVote = {
   decision: VoteDecision;
   confidence: number; // [0, 1]
   reason: string;
-  source: 'policy_rule' | 'score' | 'default_action';
+  source: 'policy_rule' | 'score' | 'default_action' | 'review_gate';
   rule_id?: string;
 };
 
@@ -294,7 +294,7 @@ function scoreSoftRules(
   return { scores, triggeredSoft };
 }
 
-function suppressSuggestedVoteFor(rule: Rule): boolean {
+function uncertaintyReviewGate(rule: Rule): boolean {
   return (
     rule.id === 'low_conf_guard' ||
     rule.id === 'low_confidence_policy_inputs' ||
@@ -303,6 +303,36 @@ function suppressSuggestedVoteFor(rule: Rule): boolean {
     rule.id === 'review_unclear_beneficiaries' ||
     rule.id === 'review_unknown_recipient'
   );
+}
+
+function fallbackVoteForReviewGate(
+  gateRule: Rule,
+  ctx: EvalContext,
+  extractionConfidence: number,
+): SuggestedVote {
+  const defaultAction = ctx.profile.default_action;
+  const decision: VoteDecision = isVoteDecision(defaultAction)
+    ? defaultAction
+    : gateRule.id.includes('no_milestones') ||
+        gateRule.id.includes('without_milestones') ||
+        gateRule.id.includes('single_recipient')
+      ? 'AGAINST'
+      : 'ABSTAIN';
+  const confidenceFactor = uncertaintyReviewGate(gateRule)
+    ? 0.28
+    : isVoteDecision(defaultAction)
+      ? 0.5
+      : 0.38;
+
+  return {
+    decision,
+    confidence: clamp01(extractionConfidence * confidenceFactor),
+    reason: uncertaintyReviewGate(gateRule)
+      ? `review gate ${gateRule.id} fired; provisional ${decision} until extracted inputs are reviewed`
+      : `review gate ${gateRule.id} fired; provisional ${decision} until reviewed`,
+    source: 'review_gate',
+    rule_id: gateRule.id,
+  };
 }
 
 function suggestedVoteFromScores(
@@ -333,7 +363,9 @@ function suggestedVoteForManualReview(
   ctx: EvalContext,
   extractionConfidence: number,
 ): SuggestedVote | null {
-  if (suppressSuggestedVoteFor(gateRule)) return null;
+  if (uncertaintyReviewGate(gateRule)) {
+    return fallbackVoteForReviewGate(gateRule, ctx, extractionConfidence);
+  }
 
   for (const rule of hardRules) {
     const action = rule.then.action;
@@ -358,7 +390,8 @@ function suggestedVoteForManualReview(
   }
 
   const { scores } = scoreSoftRules(softRules, ctx);
-  return suggestedVoteFromScores(scores, extractionConfidence);
+  return suggestedVoteFromScores(scores, extractionConfidence) ??
+    fallbackVoteForReviewGate(gateRule, ctx, extractionConfidence);
 }
 
 export function evaluate(

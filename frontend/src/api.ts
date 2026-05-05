@@ -72,7 +72,7 @@ export type PolicyEvaluation = {
     decision: VoteDecision;
     confidence: number;
     reason: string;
-    source: 'policy_rule' | 'score' | 'default_action';
+    source: 'policy_rule' | 'score' | 'default_action' | 'review_gate';
     rule_id?: string;
   } | null;
   engine_version: string;
