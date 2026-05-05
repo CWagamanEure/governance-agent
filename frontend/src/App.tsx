@@ -86,6 +86,7 @@ function Dashboard({ tab }: { tab: Tab }) {
   const [auth, setAuth] = useState<AuthState>({ status: 'loading' });
   const [profile, setProfile] = useState<StoredProfile | null>(null);
   const [profileLoaded, setProfileLoaded] = useState(false);
+  const [demoProgress, setDemoProgress] = useState(() => readDemoProgress());
   const { info, error } = useBackendInfo();
 
   useEffect(() => {
@@ -135,6 +136,24 @@ function Dashboard({ tab }: { tab: Tab }) {
     if (profile) setProfile({ ...profile, profile: null });
   }
 
+  function markLiveInferenceRun() {
+    setDemoProgress((prev) => {
+      const next = { ...prev, liveInferenceRun: true };
+      writeDemoProgress(next);
+      return next;
+    });
+  }
+
+  function resetDemoProgress() {
+    const next = { liveInferenceRun: false };
+    writeDemoProgress(next);
+    setDemoProgress(next);
+  }
+
+  const hasProfile = !!profile?.profile;
+  const profileReady = profileLoaded || auth.status === 'anonymous';
+  const attestationReady = info?.attestation?.status === 'available';
+
   return (
     <div className="dash">
       <TopBar
@@ -147,12 +166,24 @@ function Dashboard({ tab }: { tab: Tab }) {
       <TrustRibbon info={info} error={error} />
 
       <main className="dash-main">
+        <DemoGuide
+          auth={auth}
+          hasProfile={hasProfile}
+          profileLoaded={profileReady}
+          liveInferenceRun={demoProgress.liveInferenceRun}
+          attestationReady={attestationReady}
+          currentTab={tab}
+          verifyUrl={eigenVerifyUrl(info?.env ?? {})}
+          onSignIn={handleSignIn}
+          onReset={resetDemoProgress}
+        />
+
         {auth.status === 'loading' && <p className="muted">Resuming session…</p>}
 
         {auth.status !== 'loading' && tab === 'activity' && (
           <Activity
             auth={auth}
-            hasProfile={!!profile?.profile}
+            hasProfile={hasProfile}
             onSignIn={handleSignIn}
           />
         )}
@@ -160,9 +191,11 @@ function Dashboard({ tab }: { tab: Tab }) {
         {auth.status !== 'loading' && tab === 'proposals' && (
           <Proposals
             auth={auth}
-            hasProfile={!!profile?.profile}
-            profileLoaded={profileLoaded || auth.status === 'anonymous'}
+            hasProfile={hasProfile}
+            profileLoaded={profileReady}
             onSignIn={handleSignIn}
+            demoLivePending={!demoProgress.liveInferenceRun}
+            onLiveTeeRun={markLiveInferenceRun}
           />
         )}
 
@@ -170,7 +203,7 @@ function Dashboard({ tab }: { tab: Tab }) {
           <Policy
             auth={auth}
             profile={profile}
-            profileLoaded={profileLoaded || auth.status === 'anonymous'}
+            profileLoaded={profileReady}
             onProfileSaved={handleProfileSaved}
             onEdit={handleEditProfile}
             onSignIn={handleSignIn}
@@ -180,6 +213,119 @@ function Dashboard({ tab }: { tab: Tab }) {
 
       <DashFooter info={info} error={error} />
     </div>
+  );
+}
+
+type DemoProgress = {
+  liveInferenceRun: boolean;
+};
+
+const DEMO_PROGRESS_KEY = 'gov-agent:demo-progress:v1';
+
+function readDemoProgress(): DemoProgress {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(DEMO_PROGRESS_KEY) ?? '{}');
+    return { liveInferenceRun: parsed?.liveInferenceRun === true };
+  } catch {
+    return { liveInferenceRun: false };
+  }
+}
+
+function writeDemoProgress(progress: DemoProgress) {
+  try {
+    localStorage.setItem(DEMO_PROGRESS_KEY, JSON.stringify(progress));
+  } catch {
+    // Demo progress is cosmetic; ignore storage failures.
+  }
+}
+
+function DemoGuide({
+  auth,
+  hasProfile,
+  profileLoaded,
+  liveInferenceRun,
+  attestationReady,
+  currentTab,
+  verifyUrl,
+  onSignIn,
+  onReset,
+}: {
+  auth: AuthState;
+  hasProfile: boolean;
+  profileLoaded: boolean;
+  liveInferenceRun: boolean;
+  attestationReady: boolean;
+  currentTab: Tab;
+  verifyUrl: string;
+  onSignIn: () => void;
+  onReset: () => void;
+}) {
+  const walletDone = auth.status === 'authed';
+  const policyDone = walletDone && profileLoaded && hasProfile;
+  const liveDone = liveInferenceRun;
+  const proofDone = liveDone && attestationReady;
+  const doneCount = [walletDone, policyDone, liveDone, proofDone].filter(Boolean).length;
+
+  const steps = [
+    {
+      label: 'Connect wallet',
+      detail: auth.status === 'authed' ? shortAddr(auth.address) : 'SIWE session required',
+      done: walletDone,
+      action: !walletDone && auth.status !== 'loading'
+        ? <button className="btn small primary" onClick={onSignIn}>Connect</button>
+        : null,
+    },
+    {
+      label: 'Save policy',
+      detail: policyDone ? 'wallet policy active' : walletDone ? 'values + calibration' : 'after wallet connect',
+      done: policyDone,
+      action: walletDone && !policyDone
+        ? <a className="btn small primary" href="#/app/policy">{currentTab === 'policy' ? 'Finish' : 'Open policy'}</a>
+        : null,
+    },
+    {
+      label: 'Run live TEE inference',
+      detail: liveDone ? 'Eigen proxy call observed' : policyDone ? 'use first proposal card' : 'after policy save',
+      done: liveDone,
+      action: policyDone && !liveDone
+        ? <a className="btn small primary" href="#/app/proposals">{currentTab === 'proposals' ? 'Run on card' : 'Open proposals'}</a>
+        : null,
+    },
+    {
+      label: 'Show proof',
+      detail: proofDone ? 'attestation + image digest ready' : liveDone ? 'proof panel is loaded' : 'after live run',
+      done: proofDone,
+      action: liveDone
+        ? <a className="btn small" href={verifyUrl} target="_blank" rel="noreferrer">Verify</a>
+        : null,
+    },
+  ];
+
+  return (
+    <section className="demo-guide" aria-label="Demo path">
+      <div className="demo-guide-head">
+        <div>
+          <div className="dft-label">Demo path</div>
+          <strong>{doneCount}/4 ready</strong>
+        </div>
+        <button className="link-btn demo-reset" onClick={onReset}>reset</button>
+      </div>
+      <div className="demo-guide-steps">
+        {steps.map((step, i) => (
+          <div
+            key={step.label}
+            className={`demo-step ${step.done ? 'done' : doneCount === i ? 'current' : 'blocked'}`}
+          >
+            <span className="demo-step-index">{step.done ? '✓' : i + 1}</span>
+            <div className="demo-step-main">
+              <span>{step.label}</span>
+              <code>{step.detail}</code>
+            </div>
+            {step.action && <div className="demo-step-action">{step.action}</div>}
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 

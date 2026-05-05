@@ -33,6 +33,48 @@ const VALUE_EXAMPLES = [
   "I'd rather see milestone-gated grants than lump-sum disbursements.",
 ];
 
+const DEMO_VALUES = [
+  'I support funding public goods and developer infrastructure when the recipient is identifiable and the deliverables are measurable.',
+  'Large recurring treasury programs should require milestones, transparent reporting, and clear evidence that prior tranches worked.',
+  'I am cautious on irreversible contract upgrades and centralizing partnerships, even when the upside is real.',
+  'For routine technical parameter changes, I am comfortable following l2beat.eth unless the proposal changes core governance power.',
+].join(' ');
+
+const DEMO_CALIBRATION: Record<string, { choice: Choice; reason: string }> = {
+  'cal-001-stip-extension': {
+    choice: 'AGAINST',
+    reason: 'Large recurring incentives with weak measurement should not be automatic.',
+  },
+  'cal-003-pg-grant': {
+    choice: 'FOR',
+    reason: 'Public goods funding with broad recipients and quarterly reporting.',
+  },
+  'cal-004-centralized-rpc': {
+    choice: 'AGAINST',
+    reason: 'The exclusive default concentrates infrastructure power.',
+  },
+  'cal-006-dip-update': {
+    choice: 'FOR',
+    reason: 'Paid delegate programs need accountability and public rationale.',
+  },
+  'cal-007-bridge-upgrade': {
+    choice: 'ABSTAIN',
+    reason: 'Audited but irreversible, so not an automatic vote.',
+  },
+  'cal-010-doc-translation': {
+    choice: 'FOR',
+    reason: 'Small scoped grant with milestones and a known contributor team.',
+  },
+  'cal-019-mystery-grant': {
+    choice: 'AGAINST',
+    reason: 'Unidentified recipient, vague scope, no milestones, lump sum.',
+  },
+  'cal-020-l2beat-followed-vote': {
+    choice: 'FOR',
+    reason: 'Routine reversible technical change aligned with a trusted delegate.',
+  },
+};
+
 export function Onboarding({ onSaved }: { onSaved: (version: number) => void }) {
   const [step, setStep] = useState<Step>('values');
   const [statedValues, setStatedValues] = useState('');
@@ -198,8 +240,11 @@ function ValuesStep({
       </div>
 
       <div className="onboarding-examples">
-        <div className="muted tiny" style={{ marginBottom: 6 }}>
-          Examples to insert (click to add):
+        <div className="onboarding-examples-head">
+          <div className="muted tiny">Examples to insert</div>
+          <button type="button" className="btn small" onClick={() => onChange(DEMO_VALUES)}>
+            Use demo values
+          </button>
         </div>
         {VALUE_EXAMPLES.map((ex) => (
           <button
@@ -259,6 +304,23 @@ function CalibrationStep({
         about the people involved rather than the policy — toggle "personal" so we don't
         generalize from it. Skip any you'd rather not answer.
       </p>
+      <div className="calibration-toolbar">
+        <button
+          type="button"
+          className="btn small"
+          onClick={() =>
+            onUpdate(entries.map((entry) => {
+              const demo = DEMO_CALIBRATION[entry.proposal.id];
+              return demo
+                ? { ...entry, choice: demo.choice, reason: demo.reason, personal_not_policy: false }
+                : entry;
+            }))
+          }
+        >
+          Use demo calibration
+        </button>
+        <span className="muted tiny">preselects {Object.keys(DEMO_CALIBRATION).length} reviewable votes</span>
+      </div>
 
       <div className="calibration-stack">
         {entries.map((e, i) => (
