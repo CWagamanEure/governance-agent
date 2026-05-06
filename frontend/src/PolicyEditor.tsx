@@ -123,7 +123,7 @@ export function PolicyEditor({
         c.proposal.space === 'calibration.gov-agent' ? 'calibration' : 'real',
       ] as const),
     );
-    const out: { id: string; title: string | null; from: Decision; to: Decision; corpus: 'calibration' | 'real' }[] = [];
+    const out: { id: string; title: string | null; from: Decision; to: Decision; corpus: 'calibration' | 'real'; ruleIds: string[] }[] = [];
     for (const d of draftDecisions) {
       const b = baseMap.get(d.proposal_id);
       if (!b) continue;
@@ -134,6 +134,7 @@ export function PolicyEditor({
           from: b.decision,
           to: d.decision,
           corpus: corpusMap.get(d.proposal_id) ?? 'real',
+          ruleIds: d.triggered_rule_ids ?? [],
         });
       }
     }
@@ -476,7 +477,7 @@ function DiffPanel({
   previewing: boolean;
   baselineDecisions: PolicyPreviewDecision[] | null;
   draftDecisions: PolicyPreviewDecision[] | null;
-  diffs: { id: string; title: string | null; from: Decision; to: Decision; corpus: 'calibration' | 'real' }[];
+  diffs: { id: string; title: string | null; from: Decision; to: Decision; corpus: 'calibration' | 'real'; ruleIds: string[] }[];
   cached: CachedProposalRow[] | null;
 }) {
   const baseCounts = decisionCounts(baselineDecisions);
@@ -536,6 +537,15 @@ function DiffPanel({
                   <span className={`diff-from action-${d.from}`}>{d.from}</span>
                   <span className="diff-arrow">→</span>
                   <span className={`diff-to action-${d.to}`}>{d.to}</span>
+                  {d.ruleIds.length > 0 && (
+                    <span
+                      className="diff-rule-id"
+                      title={d.ruleIds.length > 1 ? `Triggered rules:\n${d.ruleIds.join('\n')}` : `Triggered rule: ${d.ruleIds[0]}`}
+                    >
+                      {d.ruleIds[0]}
+                      {d.ruleIds.length > 1 && <span className="diff-rule-more"> +{d.ruleIds.length - 1}</span>}
+                    </span>
+                  )}
                 </div>
               </div>
             ))}

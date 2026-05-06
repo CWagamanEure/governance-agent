@@ -25,7 +25,7 @@ import {
   type PipelineResult,
 } from '../api';
 import { getStoredToken } from '../lib/auth';
-import { suggestedVoteLabel, suggestedVoteMeta } from '../lib/decision';
+import { suggestedVoteLabel, suggestedVoteMeta, suggestedVoteReason } from '../lib/decision';
 import { FEATURED } from '../data';
 
 type AuthState =
@@ -312,6 +312,8 @@ function PendingCard({
 }) {
   const summary = pending.pipeline.analysis?.summary ?? '(no summary available)';
   const suggested = pending.pipeline.evaluation?.suggested_vote ?? null;
+  const [expanded, setExpanded] = useState(false);
+  const isLong = summary.length > 240;
   return (
     <article className="activity-pending">
       <header className="activity-pending-head">
@@ -329,10 +331,25 @@ function PendingCard({
         </div>
         <button className="btn primary" onClick={onDecide}>Decide</button>
       </header>
-      <p className="activity-pending-summary">{summary}</p>
+      <p className={`activity-pending-summary ${isLong && !expanded ? 'clamped' : ''}`}>
+        {summary}
+      </p>
+      {isLong && (
+        <button
+          type="button"
+          className="link-button tiny"
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      )}
       {suggested && (
         <p className="activity-suggested">
-          {suggestedVoteLabel(suggested)} · {suggestedVoteMeta(suggested)} · {suggested.reason}
+          <span className={`decision-pill action-${suggested.decision}`}>
+            {suggestedVoteLabel(suggested)}
+          </span>
+          <span className="muted"> · {suggestedVoteMeta(suggested)} · </span>
+          {suggestedVoteReason(suggested)}
         </p>
       )}
     </article>
@@ -374,7 +391,11 @@ function DecideModal({
         <div className="modal-proposal-title">{pending.title ?? pending.proposalId}</div>
         {suggested && (
           <div className="activity-suggested modal-suggested">
-            {suggestedVoteLabel(suggested)} · {suggestedVoteMeta(suggested)} · {suggested.reason}
+            <span className={`decision-pill action-${suggested.decision}`}>
+              {suggestedVoteLabel(suggested)}
+            </span>
+            <span className="muted"> · {suggestedVoteMeta(suggested)} · </span>
+            {suggestedVoteReason(suggested)}
           </div>
         )}
 

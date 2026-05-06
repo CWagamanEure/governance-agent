@@ -49,6 +49,7 @@ import {
   listAudit,
   appendAudit,
   listCachedAnalyses,
+  resetUserData,
 } from './db.js';
 import {
   generateNonce,
@@ -628,6 +629,27 @@ app.get('/profile', (c) => {
       rules_json: JSON.parse(latest.rules_json),
     },
   });
+});
+
+/**
+ * POST /demo/reset
+ *
+ * Wipes the authed user's policy versions and voting history so the demo can
+ * be replayed end-to-end (onboarding → calibration → editor → activity) from
+ * a clean slate. Audit-logged. The user row + SIWE session are preserved —
+ * after this call the client should refetch /profile, which will return a
+ * 404-shaped null and route the user to onboarding.
+ */
+app.post('/demo/reset', (c) => {
+  let address: string;
+  try {
+    address = requireAuth(c);
+  } catch {
+    return c.json({ error: 'authentication required' }, 401);
+  }
+  const user = findOrCreateUser(address);
+  const counts = resetUserData(user.id);
+  return c.json({ ok: true, ...counts });
 });
 
 /**

@@ -4,6 +4,7 @@ import {
   EIGEN_APP_ID,
   getAttestation,
   getProfile,
+  resetDemo,
   getPublicEnv,
   getWallet,
   type AttestationStub,
@@ -145,11 +146,27 @@ function Dashboard({ tab }: { tab: Tab }) {
     });
   }
 
-  function resetDemoProgress() {
+  async function resetDemoProgress() {
+    const confirmed = window.confirm(
+      'Reset demo? This deletes your saved policy (all versions) and voting history so onboarding starts from scratch. Your wallet session stays signed in.',
+    );
+    if (!confirmed) return;
+
     const next = { liveInferenceRun: false };
     writeDemoProgress(next);
     if (auth.status === 'authed') {
       clearRecentActivity(auth.address);
+      const token = getStoredToken();
+      if (token) {
+        try {
+          await resetDemo(token);
+          const fresh = await getProfile(token);
+          setProfile(fresh);
+        } catch (e: any) {
+          alert(`Demo reset failed: ${e?.message ?? String(e)}`);
+          return;
+        }
+      }
     }
     setDemoProgress(next);
     setDemoResetVersion((v) => v + 1);
@@ -330,7 +347,7 @@ function DemoGuide({
         <button
           className="link-btn demo-reset"
           onClick={onReset}
-          title="Clear live-inference progress and browser-local signed activity"
+          title="Wipe saved policy + voting history and re-run onboarding from scratch"
         >
           Reset demo
         </button>

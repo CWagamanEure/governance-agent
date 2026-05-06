@@ -246,6 +246,15 @@ export async function saveProfile(args: {
   return r.json();
 }
 
+export async function resetDemo(token: string): Promise<{ ok: true; votes: number; decisions: number; profiles: number }> {
+  const r = await fetch(`${BACKEND_URL}/demo/reset`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!r.ok) throw new Error(`demo reset failed: ${r.status} ${await r.text()}`);
+  return r.json();
+}
+
 export type CompiledProfileResponse = {
   profile: any;
   source: 'llm' | 'fallback';

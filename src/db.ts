@@ -368,6 +368,34 @@ export function saveProfile(args: {
 }
 
 // ---------------------------------------------------------------------------
+// Demo reset — wipes a user's policy + voting history so the demo can be
+// replayed from scratch. Audit-logged. Does not delete the user row itself
+// (the SIWE session stays valid; the user just lands back at onboarding).
+// ---------------------------------------------------------------------------
+
+const deleteUserVotes = db.prepare('DELETE FROM votes WHERE user_id = ?');
+const deleteUserDecisions = db.prepare('DELETE FROM decisions WHERE user_id = ?');
+const deleteUserProfiles = db.prepare('DELETE FROM policy_profiles WHERE user_id = ?');
+
+export function resetUserData(user_id: string): {
+  votes: number;
+  decisions: number;
+  profiles: number;
+} {
+  return db.transaction(() => {
+    const votes = deleteUserVotes.run(user_id).changes;
+    const decisions = deleteUserDecisions.run(user_id).changes;
+    const profiles = deleteUserProfiles.run(user_id).changes;
+    appendAudit({
+      event_type: 'DEMO_RESET',
+      user_id,
+      payload: { votes, decisions, profiles },
+    });
+    return { votes, decisions, profiles };
+  })();
+}
+
+// ---------------------------------------------------------------------------
 // Proposals (raw Snapshot records)
 // ---------------------------------------------------------------------------
 

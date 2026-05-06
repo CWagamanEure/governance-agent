@@ -54,7 +54,7 @@ Open the app on the Policy page. ProfileCard shows the saved profile.
 
 Click **"Edit rules"**.
 
-## ACT 2 — Find-obvious-rules (90s)
+## ACT 2 — Peel back the safety layers (2-3 min)
 
 The editor opens. Diff panel shows 47 cached proposals (27 real Arbitrum + 20
 onboarding calibration), zero flipped (draft equals baseline).
@@ -63,28 +63,77 @@ onboarding calibration), zero flipped (draft equals baseline).
 > 20 are the calibration set you saw during onboarding — clean cases the
 > system uses to learn the obvious patterns from your values."
 
-Scroll to **Manual review flags**. Toggle off `LOW_CONFIDENCE_EXTRACTION`.
+This act is the centerpiece. The actual saved profile (LLM-compiled from
+your values + calibration) has stacked safety floors that all need to be
+peeled back in a specific order to get the calibration grants to autovote.
+The DEMO IS the peeling — each step shows one floor, the diff updates, and
+the reviewer sees exactly which guardrail was binding.
 
-Wait 350ms. Diff panel updates: **3 flips**.
+**Step 1 — uncheck `META_GOVERNANCE`** in "Always require my review"
+(manual_review_categories grid).
 
-> "Watch the diff. Two calibration grants autovote FOR — the $12k translation
-> grant, the $40k SDK maintenance. Both have milestones, both are small, both
-> are exactly what your stated values said you'd support. The third change is
-> a real Arbitrum proposal — Code of Conduct living-document update — and it
-> only flips to ABSTAIN, not FOR. The system would let that one proceed
-> without your attention; it wouldn't vote yes for you."
+Diff updates: **1 flip** — `REAL` Updating the Code of Conduct → ABSTAIN.
 
-Now scroll to **Category defaults** → "+ Add rule":
-- category: GRANT, action: FOR, under $: 500000
-- ✅ milestones, ✅ reporting
+> "Removing META_GOVERNANCE from the always-review list lets the Code of
+> Conduct proposal fall through to my default action. The system doesn't
+> autovote yes — it abstains. That's the META_GOVERNANCE category default
+> the LLM compiled from my values."
 
-Diff stays at the same 3 (the rule was already covered by the BASELINE's
-GRANT default). This isn't a great moment — skip the explicit re-add or hide
-it. Better: just point out the existing GRANT default in the rule list.
+**Step 2 — uncheck `GRANT`** in "Always require my review", and **add a
+GRANT category default**: + Add rule → GRANT → FOR, under $500000,
+✓ milestones, ✓ reporting.
 
-> "The system already had a GRANT default. The two calibration flips above
-> are exactly that rule firing once the low-confidence net is off. Same
-> deterministic logic; the editor just makes it visible."
+Diff stays at 1. *This is intentional* — it sets up the peel.
+
+> "I've removed GRANT from the always-review list AND added an explicit
+> autovote rule. Watch — nothing else flips. Something else is still
+> blocking."
+
+**Step 3 — uncheck `LOW_CONFIDENCE_EXTRACTION`** in manual_review_flags.
+
+Diff stays at 1.
+
+> "Even removing the LLM confidence net doesn't unlock the grants. Another
+> floor is binding."
+
+**Step 4 — uncheck `SINGLE_RECIPIENT_TREASURY`** in manual_review_flags.
+
+Diff updates: **3 flips** — the two calibration grants flip to FOR, plus
+the META_GOVERNANCE flip from step 1.
+
+> "Found it. The single-recipient flag was the binding floor. Both calibration
+> grants — $12k doc translation and $40k SDK maintenance — go to one named
+> recipient each. Once I consciously remove that flag, my GRANT autovote rule
+> finally fires. Three of my last 47 proposals would have flipped. Two
+> calibration grants autovote FOR; one real Arbitrum META governance proposal
+> abstains."
+
+**The framing for a reviewer:**
+
+> "What you just saw isn't a bug. It's the editable trust contract working.
+> My LLM-compiled policy had four stacked safety floors over my GRANT
+> autovoting intent. The editor showed me each one with live feedback. I
+> made four conscious decisions to relax specific guardrails, and now the
+> system will autovote on the kind of grants my calibration said I'd
+> support. Every one of those four unchecks is a permanent record in my
+> policy hash. Anyone can verify which floors I removed."
+
+**Profile-shape caveat for the demo operator:** the four-step sequence
+above is keyed to the specific profile this session compiled. Different
+saved profiles will have different binding floors. To re-derive the
+sequence for a fresh profile:
+
+```bash
+# Inspect the saved profile
+sqlite3 -list -noheader data/app.sqlite \
+  "SELECT profile_json FROM policy_profiles ORDER BY created_at DESC LIMIT 1;" \
+  | python3 -m json.tool | head -60
+```
+
+Look at `manual_review_categories` and `manual_review_flags`. Walk through
+the LCE_FLIP examples (cal-010, cal-016, real Code of Conduct) and figure
+out which categories/flags catch them. Demo those unchecks in increasing
+order of "obvious-ness" so the reveal at the end is the satisfying one.
 
 ## ACT 3 — Refusal (45s)
 

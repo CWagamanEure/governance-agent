@@ -51,6 +51,15 @@ Only when ALL of these hold:
 
 If conditions aren't met, leave that category off category_defaults entirely. The default_action will catch it.
 
+CRITICAL — category_defaults vs manual_review_categories MUST NOT OVERLAP:
+The deterministic engine treats manual_review_categories as a BLANKET OVERRIDE evaluated before category_defaults. Any autovote rule (FOR/AGAINST/ABSTAIN action) for a category that ALSO appears in manual_review_categories is unreachable dead code — every proposal in that category will route to MANUAL_REVIEW regardless of the rule's conditions.
+
+If you decide to emit a category_default for category X with action FOR/AGAINST/ABSTAIN, you MUST omit X from manual_review_categories. You cannot have both. Choose:
+  - Autovote with conditions (rule in category_defaults, X NOT in manual_review_categories), OR
+  - Always-review (X in manual_review_categories, no rule for X in category_defaults).
+
+This applies even when the user's text expresses general caution about a category — if calibration evidence supports a narrow autovote rule, the rule must replace the manual_review_categories entry, not coexist with it. Other safety properties (manual_review_flags, hard_rules, large_treasury_usd, the engine's own low_conf_guard) still apply on top of any autovote rule, so removing X from manual_review_categories does NOT disable safety — it just unlocks the conditional autovote you intended.
+
 EXAMPLES:
 
 Example 1 — user wants accountable small grants:
@@ -82,7 +91,7 @@ CONSTRAINTS ON OTHER FIELDS:
 
 - stated_values: each entry is one declarative sentence in the user's own voice, paraphrased only for clarity. Do NOT invent values they didn't express.
 - default_action: 'MANUAL_REVIEW' unless the user explicitly wants ABSTAIN-as-default ("if you can't decide, just abstain"). If you choose ABSTAIN as the default, still emit explicit narrow FOR/AGAINST rules where calibration supports them; do not make ABSTAIN carry the whole policy.
-- manual_review_categories: ALWAYS include 'CONTRACT_UPGRADE' and 'OWNERSHIP_TRANSFER'. Add 'TOKENOMICS' if user mentions emissions/buybacks/token supply. Add 'TREASURY_SPEND' if user mentions large/recurring spend skepticism. Add 'META_GOVERNANCE' if user mentions governance process or delegate compensation skepticism. Add 'PARTNERSHIP' if user mentions concentration/decentralization concerns.
+- manual_review_categories: ALWAYS include 'CONTRACT_UPGRADE' and 'OWNERSHIP_TRANSFER' (these are high-stakes and should never autovote). Add 'TOKENOMICS' if user mentions emissions/buybacks/token supply. Add 'TREASURY_SPEND' if user mentions large/recurring spend skepticism AND you did not emit a TREASURY_SPEND rule in category_defaults. Add 'META_GOVERNANCE' if user mentions governance process or delegate compensation skepticism AND you did not emit a META_GOVERNANCE rule. Add 'PARTNERSHIP' if user mentions concentration/decentralization concerns AND you did not emit a PARTNERSHIP rule. Same applies for any other category — if it has a category_default, do NOT add it here. GRANT in particular is rarely appropriate for manual_review_categories: if calibration shows a clean autovote pattern, emit the rule with constraints instead.
 - manual_review_flags: ALWAYS include 'LOW_CONFIDENCE_EXTRACTION', 'UNKNOWN_TREASURY_AMOUNT', 'LARGE_TREASURY_SPEND', 'CONTRACT_UPGRADE', 'OWNERSHIP_OR_PERMISSION_CHANGE', 'CONSTITUTIONAL_CHANGE', 'UNCLEAR_BENEFICIARIES', 'UNKNOWN_RECIPIENT'. Additionally include 'SINGLE_RECIPIENT_TREASURY' and 'NO_MILESTONES' if user mentions accountability or recipient-identifiability concerns.
 - author_blocklist: empty unless the user named specific addresses.
 - hard_rules:
