@@ -248,15 +248,21 @@ export function PolicyEditor({
   // unsaved edits, prompt before discarding. The actual message is
   // browser-controlled in modern browsers; preventDefault + returnValue is
   // the contract.
+  //
+  // Suppressed during in-flight save: the user just clicked Save, the
+  // request has not returned, isDirty is technically still true (draft
+  // hasn't matched the new baseline yet because the parent has not
+  // re-fetched) — but prompting "you have unsaved edits" mid-save is
+  // confusing. Skip the handler entirely while saving.
   useEffect(() => {
-    if (!isDirty) return;
+    if (!isDirty || saving) return;
     const handler = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = '';
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [isDirty]);
+  }, [isDirty, saving]);
 
   async function handleSave() {
     setSaving(true);

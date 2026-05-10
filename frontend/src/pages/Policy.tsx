@@ -80,6 +80,12 @@ export function Policy({
       <>
         <SectionHeading>Edit policy</SectionHeading>
         <PolicyEditor
+          // Force a fresh editor instance whenever the saved profile id
+          // changes so stale draft, banner, or preview state from the prior
+          // version cannot leak across a save. Today the parent flips
+          // `editing` to false on save so this is defensive; if the editor
+          // ever stays mounted across saves, this prevents drift.
+          key={profile.profile.id}
           token={token}
           baseProfile={profile.profile}
           onSaved={() => {
