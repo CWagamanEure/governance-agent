@@ -13,6 +13,7 @@
 
 import { useState, useEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { copyText } from './lib/clipboard';
 
 type AuthState =
   | { status: 'loading' }
@@ -153,8 +154,9 @@ function AccountModal({
   const [copied, setCopied] = useState(false);
   const expiry = useStoredTokenExpiry();
 
-  function copyAddress() {
-    navigator.clipboard.writeText(address);
+  async function copyAddress() {
+    const ok = await copyText(address);
+    if (!ok) return;
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   }

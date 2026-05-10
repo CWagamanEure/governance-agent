@@ -5,6 +5,7 @@
  */
 
 import { useState } from 'react';
+import { copyText } from './lib/clipboard';
 
 export function HashCopyChip({
   hash,
@@ -17,12 +18,11 @@ export function HashCopyChip({
 }) {
   const [copied, setCopied] = useState(false);
 
-  function handleCopy() {
-    if (!navigator.clipboard) return;
-    navigator.clipboard.writeText(hash).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    });
+  async function handleCopy() {
+    const ok = await copyText(hash);
+    if (!ok) return;
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
   }
 
   return (
