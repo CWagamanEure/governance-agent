@@ -362,9 +362,16 @@ function DemoGuide({
     },
     {
       label: 'Show proof',
-      detail: proofDone ? 'attestation + image digest ready' : liveDone ? 'proof panel is loaded' : 'after live run',
+      detail: proofDone
+        ? 'attestation + image digest ready'
+        : liveDone
+          ? 'attestation pending'
+          : 'after live run',
       done: proofDone,
-      action: liveDone
+      // Only surface the Verify link once the attestation report is available;
+      // showing it earlier risks the operator clicking through to a verifier
+      // that has not yet seen the deployed image digest.
+      action: proofDone
         ? <a className="btn small" href={verifyUrl} target="_blank" rel="noreferrer">Verify</a>
         : null,
     },

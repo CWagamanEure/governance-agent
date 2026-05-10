@@ -1033,6 +1033,12 @@ export function normalizeProfile(input: unknown): PolicyProfileT {
       'growth_vs_sustainability' in old ||
       'protocol_risk_tolerance' in old
     ) {
+      // Legacy axes-shaped profile — migrate forward to v2 with whatever
+      // free-text values + blocklist were carried alongside it.
+      console.warn(
+        '[policy] migrating legacy axes-shaped profile to policy-v2; ' +
+          'category defaults reset to DEFAULT_PROFILE.',
+      );
       return {
         ...DEFAULT_PROFILE,
         stated_values: Array.isArray(old.stated_values)
@@ -1045,5 +1051,15 @@ export function normalizeProfile(input: unknown): PolicyProfileT {
     }
   }
 
+  // Unrecognized shape. Falling back silently would mean a corrupted profile
+  // disappears with no signal — and the user's edits would all be applied to
+  // DEFAULT_PROFILE without warning. Surface it loudly in logs (the audit
+  // trail in /audit also captures the original PROFILE_SAVED hash, so the
+  // original input is recoverable).
+  console.warn(
+    '[policy] normalizeProfile received unrecognized input shape; ' +
+      'returning DEFAULT_PROFILE. Zod errors:',
+    parsed.error.issues,
+  );
   return DEFAULT_PROFILE;
 }

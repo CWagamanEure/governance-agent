@@ -151,6 +151,7 @@ function AccountModal({
   onDisconnect: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const expiry = useStoredTokenExpiry();
 
   function copyAddress() {
     navigator.clipboard.writeText(address);
@@ -175,6 +176,14 @@ function AccountModal({
           <p className="muted tiny" style={{ margin: '4px 0 0' }}>
             Connected via browser wallet
           </p>
+          {expiry && (
+            <p
+              className={`muted tiny ${expiry.urgent ? 'session-expiry-urgent' : ''}`}
+              style={{ margin: '4px 0 0' }}
+            >
+              Session {expiry.label}
+            </p>
+          )}
         </div>
 
         <button className="wallet-option disconnect-option" onClick={onDisconnect}>
@@ -183,6 +192,49 @@ function AccountModal({
       </div>
     </ModalOverlay>
   );
+}
+
+// Decode the SIWE JWT's `exp` claim and return a friendly remaining-time
+// label. We do NOT verify the signature here — this is purely for display.
+// The backend re-validates on every authed request anyway.
+function useStoredTokenExpiry(): { label: string; urgent: boolean } | null {
+  const [expiry, setExpiry] = useState<{ label: string; urgent: boolean } | null>(null);
+  useEffect(() => {
+    const token = localStorage.getItem('gov-agent.token');
+    if (!token) return;
+    const parts = token.split('.');
+    if (parts.length !== 3) return;
+    try {
+      const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+      if (typeof payload.exp !== 'number') return;
+      const expMs = payload.exp * 1000;
+      const remainingMs = expMs - Date.now();
+      if (remainingMs <= 0) {
+        setExpiry({ label: 'expired — sign in again', urgent: true });
+        return;
+      }
+      const remainingHours = remainingMs / (1000 * 60 * 60);
+      if (remainingHours < 1) {
+        setExpiry({
+          label: `expires in ${Math.ceil(remainingMs / (1000 * 60))} min`,
+          urgent: true,
+        });
+      } else if (remainingHours < 24) {
+        setExpiry({
+          label: `expires in ${Math.round(remainingHours)} hr`,
+          urgent: remainingHours < 6,
+        });
+      } else {
+        setExpiry({
+          label: `expires in ${Math.round(remainingHours / 24)} days`,
+          urgent: false,
+        });
+      }
+    } catch {
+      // Malformed JWT — surface nothing rather than confuse.
+    }
+  }, []);
+  return expiry;
 }
 
 function ModalOverlay({

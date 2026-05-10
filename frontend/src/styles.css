@@ -1076,6 +1076,11 @@ input[type="range"] {
   transition: background-color 0.1s, border-color 0.1s;
 }
 .hash-copy-chip:hover { background: var(--bg-elev); border-color: var(--accent); }
+
+/* Session expiry warning in the WalletButton account modal. Visible only
+   when the JWT is < 6 hours from expiring — gives the operator a chance
+   to refresh before stage. */
+.session-expiry-urgent { color: var(--warn, #f4c869); }
 .hash-copy-chip code { background: transparent; padding: 0; color: inherit; font-size: inherit; }
 .hash-copy-chip .copy-icon { color: var(--fg-soft); font-size: 12px; }
 

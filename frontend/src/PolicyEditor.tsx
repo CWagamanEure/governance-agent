@@ -484,9 +484,17 @@ function CategoryDefaultsField({ draft, setDraft }: { draft: Profile; setDraft: 
                   placeholder="any"
                   className="editor-input small"
                 />
-                {typeof d.max_treasury_usd === 'number' && (
+                {typeof d.max_treasury_usd === 'number' ? (
                   <span className="muted tiny" style={{ marginLeft: 4 }}>
                     ${d.max_treasury_usd.toLocaleString()}
+                  </span>
+                ) : (
+                  <span
+                    className="muted tiny"
+                    style={{ marginLeft: 4 }}
+                    title="No cap — this rule applies to grants of any size"
+                  >
+                    (any cap)
                   </span>
                 )}
               </label>
