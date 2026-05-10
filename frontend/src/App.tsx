@@ -565,7 +565,10 @@ function TEEProofPanel({ info, error }: { info: BackendInfo | null; error: strin
   const isTee = Boolean(machine);
   const evidenceOk = attestation?.bound_evidence?.ok;
   const kmsOk = attestation?.kms_jwt?.ok;
-  const imageDigest = attestation?.kms_jwt?.decoded?.submods?.container?.image_digest;
+  // The decoded JWT payload nests submods.container.image_digest one level
+  // deeper than the legacy type declared. Older code read it from
+  // decoded.submods which always returned undefined silently.
+  const imageDigest = attestation?.kms_jwt?.decoded?.payload?.submods?.container?.image_digest;
   const appId = eigenAppId(env);
   const verifyUrl = eigenVerifyUrl(env);
   const attestationLabel = attestation

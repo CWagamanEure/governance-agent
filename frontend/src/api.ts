@@ -22,8 +22,12 @@ export const SNAPSHOT_GQL = 'https://hub.snapshot.org/graphql';
 
 export type Health = { ok: boolean; version: string };
 export type WalletInfo = { address: string; derivation_path: string };
+// Mirror of src/attestation.ts AttestationReport — every field that the
+// AttestationCard renders should be declared here so the component reads
+// it without `any` casts. Keep in sync with attestation.ts when fields
+// change.
 export type AttestationStub = {
-  status: string;
+  status: 'available' | 'unavailable' | string;
   note?: string;
   generated_at?: number;
   public_env?: Record<string, string>;
@@ -31,23 +35,70 @@ export type AttestationStub = {
   app?: {
     name?: string;
     version?: string;
-    wallet_address?: string;
+    wallet_address?: string | null;
     public_env?: Record<string, string>;
+  };
+  runtime?: {
+    tee_socket_path?: string;
+    kms_server_url_present?: boolean;
+    kms_public_key_present?: boolean;
+    kms_auth_jwt_present?: boolean;
   };
   bound_evidence?: {
     ok?: boolean;
+    socket_path?: string;
+    challenge_b64?: string;
+    challenge_sha256?: string;
+    evidence_b64?: string;
     evidence_sha256?: string;
+    evidence_bytes?: number;
+    error?: string;
   };
   kms_jwt?: {
     ok?: boolean;
+    source?: 'KMS_AUTH_JWT' | 'attest-client' | 'none' | string;
+    audience?: string;
+    error?: string;
     decoded?: {
-      sub?: string;
-      submods?: {
-        container?: {
-          image_digest?: string;
-          image_reference?: string;
+      header?: { alg?: string; typ?: string };
+      payload?: {
+        app_id?: string;
+        sub?: string;
+        iss?: string;
+        aud?: string[];
+        exp?: number;
+        iat?: number;
+        hardened?: boolean;
+        secboot?: boolean;
+        hwmodel?: string;
+        sevsnp?: {
+          measurement?: string;
+          host_data?: string;
+          guest_svn?: number;
+          current_tcb?: number;
+          reported_tcb?: number;
+          committed_tcb?: number;
+        };
+        submods?: {
+          container?: {
+            image_digest?: string;
+            image_reference?: string;
+            image_id?: string;
+            restart_policy?: string;
+            args?: string[];
+            env?: Record<string, string>;
+          };
+        };
+        gce?: {
+          project_id?: string;
+          project_number?: string;
+          zone?: string;
+          instance_name?: string;
+          instance_id?: string;
         };
       };
+      signature_b64url_len?: number;
+      token_sha256?: string;
     };
   };
 };
