@@ -49,6 +49,34 @@ type Flag = typeof FLAGS[number];
 
 type Profile = any; // schema-validated server-side
 
+/**
+ * Parse a USD-shaped input value. Accepts:
+ *   ""              → null  (means "no cap" / "no threshold")
+ *   "500000"        → 500000
+ *   "$500,000"      → 500000  (strips $ and ,)
+ *   "  500k "       → 500000  (k/m suffix)
+ *   "0.5m"          → 500000
+ * Rejects NaN, negatives, and non-finite values by returning the previous
+ * value (so a paste of garbage doesn't silently disable a hard floor).
+ */
+function parseUsdInput(raw: string, previous: number | null): number | null {
+  const trimmed = raw.trim();
+  if (trimmed === '') return null;
+  const cleaned = trimmed.replace(/[$,\s]/g, '').toLowerCase();
+  let multiplier = 1;
+  let body = cleaned;
+  if (cleaned.endsWith('k')) {
+    multiplier = 1_000;
+    body = cleaned.slice(0, -1);
+  } else if (cleaned.endsWith('m')) {
+    multiplier = 1_000_000;
+    body = cleaned.slice(0, -1);
+  }
+  const parsed = Number(body) * multiplier;
+  if (!Number.isFinite(parsed) || parsed < 0) return previous;
+  return parsed;
+}
+
 function draftStorageKey(profileId: string): string {
   return `gov-agent:editor-draft:${profileId}`;
 }
@@ -351,17 +379,21 @@ function LargeTreasuryField({ draft, setDraft }: { draft: Profile; setDraft: (p:
         Treasury spends above this dollar amount go to MANUAL_REVIEW regardless of category default.
       </p>
       <input
-        type="number"
-        min={0}
-        step={1000}
+        type="text"
+        inputMode="decimal"
         value={draft.large_treasury_usd ?? ''}
         onChange={(e) => {
-          const v = e.target.value === '' ? null : Number(e.target.value);
+          const v = parseUsdInput(e.target.value, draft.large_treasury_usd ?? null);
           setDraft({ ...draft, large_treasury_usd: v });
         }}
         placeholder="(no threshold)"
         className="editor-input"
       />
+      {typeof draft.large_treasury_usd === 'number' && (
+        <p className="muted tiny" style={{ marginTop: 4 }}>
+          ${draft.large_treasury_usd.toLocaleString()}
+        </p>
+      )}
     </section>
   );
 }
@@ -435,17 +467,21 @@ function CategoryDefaultsField({ draft, setDraft }: { draft: Profile; setDraft: 
               <label className="editor-inline">
                 under $
                 <input
-                  type="number"
-                  min={0}
-                  step={1000}
+                  type="text"
+                  inputMode="decimal"
                   value={d.max_treasury_usd ?? ''}
                   onChange={(e) => {
-                    const v = e.target.value === '' ? null : Number(e.target.value);
+                    const v = parseUsdInput(e.target.value, d.max_treasury_usd ?? null);
                     update(i, { max_treasury_usd: v });
                   }}
                   placeholder="any"
                   className="editor-input small"
                 />
+                {typeof d.max_treasury_usd === 'number' && (
+                  <span className="muted tiny" style={{ marginLeft: 4 }}>
+                    ${d.max_treasury_usd.toLocaleString()}
+                  </span>
+                )}
               </label>
               <label className="editor-inline">
                 <input
@@ -532,17 +568,21 @@ function HardRulesField({ draft, setDraft }: { draft: Profile; setDraft: (p: Pro
       <label className="editor-inline">
         Single-recipient cap: $
         <input
-          type="number"
-          min={0}
-          step={1000}
+          type="text"
+          inputMode="decimal"
           value={hard.max_single_recipient_treasury_usd ?? ''}
           onChange={(e) => {
-            const v = e.target.value === '' ? null : Number(e.target.value);
+            const v = parseUsdInput(e.target.value, hard.max_single_recipient_treasury_usd ?? null);
             update({ max_single_recipient_treasury_usd: v });
           }}
           placeholder="(no cap)"
           className="editor-input small"
         />
+        {typeof hard.max_single_recipient_treasury_usd === 'number' && (
+          <span className="muted tiny" style={{ marginLeft: 4 }}>
+            ${hard.max_single_recipient_treasury_usd.toLocaleString()}
+          </span>
+        )}
       </label>
       <label className="editor-inline" style={{ display: 'block', marginTop: 8 }}>
         <input
