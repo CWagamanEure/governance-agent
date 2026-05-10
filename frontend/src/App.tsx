@@ -264,6 +264,10 @@ function Dashboard({ tab }: { tab: Tab }) {
             onProfileSaved={handleProfileSaved}
             onEdit={handleEditProfile}
             onSignIn={handleSignIn}
+            attestation={info?.attestation ?? null}
+            publicEnv={info?.env ?? null}
+            agentWallet={info?.wallet ?? null}
+            verifyUrl={eigenVerifyUrl(info?.env ?? {})}
           />
         )}
       </main>

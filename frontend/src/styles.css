@@ -1081,6 +1081,125 @@ input[type="range"] {
    when the JWT is < 6 hours from expiring — gives the operator a chance
    to refresh before stage. */
 .session-expiry-urgent { color: var(--warn, #f4c869); }
+
+/* ============================================================== */
+/* AttestationCard — proof axes for ACT 5                         */
+/* ============================================================== */
+
+.attestation-card {
+  padding: 22px 22px 18px;
+}
+.attestation-card-local {
+  padding: 16px 22px;
+  background: var(--bg-elev);
+  border: 1px dashed var(--border);
+}
+.attestation-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.att-row {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.att-row:first-of-type { border-top: none; padding-top: 0; }
+
+.att-row-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.att-row-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.att-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--good, #6cd07a);
+  box-shadow: 0 0 6px rgba(108, 208, 122, 0.5);
+}
+
+.att-pill {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  color: var(--fg);
+}
+.att-pill-on {
+  border-color: rgba(108, 208, 122, 0.4);
+  background: rgba(108, 208, 122, 0.08);
+}
+.att-pill-soft {
+  color: var(--fg-soft);
+}
+
+.att-mono {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg-elev-2);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.att-inline-link {
+  font-size: 11px;
+}
+
+.att-image-ref {
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  font-size: 11px;
+}
+
+.att-identity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+.att-identity > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.att-tag {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 9.5px;
+  opacity: 0.7;
+}
+
+@media (max-width: 760px) {
+  .att-row { grid-template-columns: 1fr; gap: 4px; }
+}
 .hash-copy-chip code { background: transparent; padding: 0; color: inherit; font-size: inherit; }
 .hash-copy-chip .copy-icon { color: var(--fg-soft); font-size: 12px; }
 

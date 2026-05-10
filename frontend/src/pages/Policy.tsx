@@ -4,11 +4,12 @@
  */
 
 import { useState } from 'react';
-import { type StoredProfile } from '../api';
+import { type AttestationStub, type StoredProfile, type WalletInfo } from '../api';
 import { getStoredToken } from '../lib/auth';
 import { Onboarding } from '../Onboarding';
 import { PolicyEditor } from '../PolicyEditor';
 import { SignAndVerifyCard } from '../SignAndVerifyCard';
+import { AttestationCard } from '../AttestationCard';
 import { ConnectGate, SectionHeading } from './Activity';
 import { HashCopyChip } from '../HashCopyChip';
 
@@ -24,6 +25,10 @@ export function Policy({
   onProfileSaved,
   onEdit,
   onSignIn,
+  attestation,
+  publicEnv,
+  agentWallet,
+  verifyUrl,
 }: {
   auth: AuthState;
   profile: StoredProfile | null;
@@ -31,6 +36,10 @@ export function Policy({
   onProfileSaved: () => void;
   onEdit: () => void;
   onSignIn: () => void;
+  attestation: AttestationStub | null;
+  publicEnv: Record<string, string> | null;
+  agentWallet: WalletInfo | null;
+  verifyUrl: string;
 }) {
   const [editing, setEditing] = useState(false);
 
@@ -89,6 +98,14 @@ export function Policy({
           <SignAndVerifyCard token={token} profile={profile.profile} />
         </div>
       )}
+      <div style={{ marginTop: 16 }}>
+        <AttestationCard
+          attestation={attestation}
+          publicEnv={publicEnv ?? {}}
+          walletAddress={agentWallet?.address ?? null}
+          verifyUrl={verifyUrl}
+        />
+      </div>
     </>
   );
 }
