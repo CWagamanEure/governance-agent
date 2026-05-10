@@ -58,12 +58,47 @@ declare global {
   }
 }
 
+// Wallet UX timeout. requestAddresses() and signMessage() depend on the
+// extension's own popup, which can be dismissed by the OS / extension chrome
+// without ever firing back to the page. Without this, an aborted SIWE flow
+// hangs the demo silently. 45s is generous enough for the user to actually
+// click but short enough to surface a clear error before it's awkward.
+const WALLET_OP_TIMEOUT_MS = 45_000;
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(
+      () =>
+        reject(
+          new Error(
+            `${label} timed out after ${Math.round(ms / 1000)}s — the wallet popup may have been closed or dismissed. Try again.`,
+          ),
+        ),
+      ms,
+    );
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+}
+
 export async function connectWallet(): Promise<Address> {
   if (!window.ethereum) {
     throw new Error('No injected wallet found. Install MetaMask or another EVM wallet.');
   }
   const wallet = createWalletClient({ transport: custom(window.ethereum) });
-  const [address] = await wallet.requestAddresses();
+  const [address] = await withTimeout(
+    wallet.requestAddresses(),
+    WALLET_OP_TIMEOUT_MS,
+    'Wallet connect',
+  );
   if (!address) throw new Error('Wallet did not return an address.');
   return address;
 }
@@ -78,7 +113,11 @@ export async function signInWithEthereum(): Promise<{ address: Address; token: s
   }
 
   const wallet = createWalletClient({ transport: custom(window.ethereum) });
-  const [address] = await wallet.requestAddresses();
+  const [address] = await withTimeout(
+    wallet.requestAddresses(),
+    WALLET_OP_TIMEOUT_MS,
+    'Wallet connect',
+  );
   if (!address) throw new Error('Wallet did not return an address.');
 
   // 1. Fetch a fresh nonce from the backend
@@ -99,7 +138,11 @@ export async function signInWithEthereum(): Promise<{ address: Address; token: s
   });
 
   // 3. Ask the wallet to sign it
-  const signature = await wallet.signMessage({ account: address, message });
+  const signature = await withTimeout(
+    wallet.signMessage({ account: address, message }),
+    WALLET_OP_TIMEOUT_MS,
+    'Sign-in signature',
+  );
 
   // 4. POST to /auth/siwe/verify
   const verifyRes = await fetch(`${BACKEND_URL}/auth/siwe/verify`, {

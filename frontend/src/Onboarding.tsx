@@ -242,7 +242,21 @@ function ValuesStep({
       <div className="onboarding-examples">
         <div className="onboarding-examples-head">
           <div className="muted tiny">Examples to insert</div>
-          <button type="button" className="btn small" onClick={() => onChange(DEMO_VALUES)}>
+          <button
+            type="button"
+            className="btn small"
+            onClick={() => {
+              if (
+                value.trim().length > 0 &&
+                !window.confirm(
+                  'Replace your typed values with the demo values? Your text will be lost.',
+                )
+              ) {
+                return;
+              }
+              onChange(DEMO_VALUES);
+            }}
+          >
             Use demo values
           </button>
         </div>
