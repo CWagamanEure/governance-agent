@@ -1021,19 +1021,40 @@ app.post('/vote/submit', async (c) => {
   }
 
   // The transport JSON-encodes bigints as numbers; coerce timestamp back so
-  // local re-verification uses the same shape that was signed.
+  // local re-verification uses the same shape that was signed. Validate the
+  // raw value first so a non-integer can never reach BigInt() (which would
+  // throw RangeError / SyntaxError and produce an opaque 500).
+  const rawTimestamp = envelope.data.message.timestamp as unknown;
+  const ts = typeof rawTimestamp === 'string' ? Number(rawTimestamp) : rawTimestamp;
+  if (typeof ts !== 'number' || !Number.isFinite(ts) || !Number.isInteger(ts) || ts < 0) {
+    return c.json({ error: 'envelope.data.message.timestamp must be a non-negative integer' }, 400);
+  }
   const restoredEnvelope: SignedVoteEnvelope = {
     ...envelope,
     data: {
       ...envelope.data,
       message: {
         ...envelope.data.message,
-        timestamp: BigInt(envelope.data.message.timestamp as unknown as string | number | bigint),
+        timestamp: BigInt(ts),
       },
     },
   };
 
-  const recovered = await verifyEnvelope(restoredEnvelope);
+  // verifyEnvelope can throw InvalidAddressError from viem when address is
+  // not a valid 20-byte hex (or when the typed-data shape is malformed).
+  // Translate to a clean 400 instead of a bare 500 from the unhandled throw.
+  let recovered: boolean;
+  try {
+    recovered = await verifyEnvelope(restoredEnvelope);
+  } catch (e) {
+    return c.json(
+      {
+        error: 'envelope_malformed',
+        message: e instanceof Error ? e.message : String(e),
+      },
+      400,
+    );
+  }
   if (!recovered) {
     return c.json(
       { error: 'envelope signature does not recover to its declared address' },
