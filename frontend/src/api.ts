@@ -421,12 +421,17 @@ export type DecisionVerifyResult = {
     // injected MNEMONIC, not an arbitrary key. Without this, a self-
     // consistent forged blob would verify ok.
     agent_address: boolean;
+    // null when the caller did not supply the proposal in the verify body
+    // (legacy callers); true/false when supplied and re-hashed.
+    proposal_hash: boolean | null;
   };
   hashes: {
     policy: { signed: string; replayed: string };
     rules: { signed: string; replayed: string };
     analysis: { signed: string; replayed: string };
     evaluation: { signed: string; replayed: string };
+    // null when the caller did not supply the proposal.
+    proposal: { signed: string; replayed: string } | null;
   };
   signed_agent_address?: string;
   accepted_agent_addresses?: string[];
@@ -437,6 +442,11 @@ export async function verifyDecisionBlob(args: {
   blob: any;
   policy: any;
   analysis: any;
+  // Optional: when supplied, the backend re-hashes the proposal and asserts
+  // it matches the proposalHash committed in the signed blob. Strengthens
+  // the verify guarantee from "internally consistent" to "the analysis
+  // belongs to the proposal that was signed".
+  proposal?: any;
 }): Promise<DecisionVerifyResult> {
   const r = await fetch(`${BACKEND_URL}/decision/verify`, {
     method: 'POST',

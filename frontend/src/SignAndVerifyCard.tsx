@@ -57,6 +57,11 @@ type SignedState = {
   blob: any;
   analysis: any;
   evaluation: any;
+  // The Snapshot proposal raw record that the pipeline saw at sign time.
+  // Threaded into /decision/verify so the backend can re-hash it and
+  // confirm the analysis really belongs to this proposal (not just any
+  // proposal that evaluates to the same decision).
+  proposal: any;
   vote: { envelope: any; choice: number } | null;
 };
 
@@ -216,6 +221,7 @@ export function SignAndVerifyCard({
         blob: result.decision_blob,
         analysis: result.analysis,
         evaluation: result.evaluation,
+        proposal: proposalRaw,
         // result.vote is non-null only when the policy decided FOR/AGAINST/ABSTAIN.
         // MANUAL_REVIEW intentionally produces no envelope, which gates Submit.
         vote: result.vote,
@@ -237,6 +243,7 @@ export function SignAndVerifyCard({
         blob: signed.blob,
         policy: profile.profile_json,
         analysis: signed.analysis,
+        proposal: signed.proposal,
       });
       if (runIdRef.current !== myRun) return;
       setVerifyResult(r);
@@ -538,9 +545,17 @@ function VerifySummary({ result }: { result: DecisionVerifyResult }) {
         </span>
       </div>
       <div className="sv-grid" style={{ marginTop: 10 }}>
-        {Object.entries(result.checks).map(([k, ok]) => (
-          <SvRow key={k} label={k.replace(/_/g, ' ')} value={ok ? 'match' : 'MISMATCH'} good={ok} mono />
-        ))}
+        {Object.entries(result.checks).map(([k, ok]) => {
+          // `null` means the caller did not supply that input (today: only
+          // proposal_hash for legacy callers). Render as "skipped" rather
+          // than MISMATCH so the operator can see the verifier reported
+          // nothing rather than disagreed.
+          const value = ok === null ? 'skipped' : ok ? 'match' : 'MISMATCH';
+          const good = ok === null ? undefined : ok;
+          return (
+            <SvRow key={k} label={k.replace(/_/g, ' ')} value={value} good={good} mono />
+          );
+        })}
       </div>
     </div>
   );

@@ -13,6 +13,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
+import { bodyLimit } from 'hono/body-limit';
 import { serve } from '@hono/node-server';
 
 // Load .env if present (local dev). On EigenCompute the file isn't shipped
@@ -51,6 +52,7 @@ import {
   appendAudit,
   listCachedAnalyses,
   resetUserData,
+  resetAndSeedUserData,
 } from './db.js';
 import {
   generateNonce,
@@ -783,14 +785,17 @@ app.post('/demo/reset', async (c) => {
   }
 
   const user = findOrCreateUser(address);
-  const counts = resetUserData(user.id);
 
   if (body.skip_seed) {
+    const counts = resetUserData(user.id);
     return c.json({ ok: true, seeded: false, ...counts });
   }
 
+  // Atomic wipe + seed: if the seed insert fails, the wipe is rolled back
+  // too, so the operator never lands in the half-state where the previous
+  // policy is gone but the demo profile is not installed.
   const rules = compileProfileToRules(DEMO_PROFILE);
-  const seeded = saveProfile({
+  const { counts, profile: seeded } = resetAndSeedUserData({
     user_id: user.id,
     profile: DEMO_PROFILE,
     rules,
@@ -1227,7 +1232,14 @@ app.get('/submit-allowlist', (c) => {
  *
  * Returns: per-check verdicts plus an elapsed-ms timing.
  */
-app.post('/decision/verify', async (c) => {
+app.post(
+  '/decision/verify',
+  // Cap at 256 KB. Real decision blobs from the demo are < 50 KB; bigger
+  // bodies would only be malicious or buggy callers and would otherwise be
+  // free CPU + IO amplification on the single-process Hono server. Hono
+  // returns a 413 with no body by default.
+  bodyLimit({ maxSize: 256 * 1024 }),
+  async (c) => {
   let body: any;
   try {
     body = await c.req.json();
@@ -1238,6 +1250,14 @@ app.post('/decision/verify', async (c) => {
   const blob = body?.blob as SignedDecisionBlob | undefined;
   const policyParsed = PolicyProfileSchema.safeParse(body?.policy);
   const analysis = body?.analysis as AnalysisForPolicy | undefined;
+  // Optional: when supplied, we re-hash the proposal and confirm it matches
+  // the proposalHash committed in the signed blob. Without this check,
+  // a caller could swap analysis to one extracted from a different proposal
+  // that happens to evaluate to the same decision under the same policy,
+  // and the four content-addressed checks would still pass. New /vote/sign
+  // pipeline supplies it; legacy callers can omit and the proposal_hash
+  // check is reported as not_checked.
+  const proposalRaw = body?.proposal as unknown;
 
   if (!blob || !blob.payload || !blob.signature || !policyParsed.success || !analysis) {
     return c.json({ error: "body must include 'blob', 'policy', and 'analysis'" }, 400);
@@ -1248,11 +1268,26 @@ app.post('/decision/verify', async (c) => {
 
   // 1. Re-derive the deterministic rule set from the supplied policy and
   //    re-run the engine. No LLM call. No DB read. Pure replay.
+  //    The engine accesses analysis.uncertainty.field_confidence and similar
+  //    nested paths — a malformed analysis can throw uncaught at runtime.
+  //    Catch and translate to 400 so the verify endpoint returns a clean
+  //    error instead of a 500.
   const rules = compileProfileToRules(policy);
-  const replayed = evaluatePolicy(analysis, policy, rules, {
-    id: blob.payload.proposal.id,
-    space: blob.payload.proposal.space,
-  });
+  let replayed;
+  try {
+    replayed = evaluatePolicy(analysis, policy, rules, {
+      id: blob.payload.proposal.id,
+      space: blob.payload.proposal.space,
+    });
+  } catch (e) {
+    return c.json(
+      {
+        error: 'engine_error',
+        message: e instanceof Error ? e.message : String(e),
+      },
+      400,
+    );
+  }
 
   // 2. Hash the supplied inputs the same way decision-blob.ts does at sign
   //    time. If anyone substituted a different policy or analysis, the hashes
@@ -1261,12 +1296,17 @@ app.post('/decision/verify', async (c) => {
   const rulesHash = hashJson(rules);
   const analysisHash = hashJson(analysis);
   const evaluationHash = hashJson(replayed);
+  const proposalHash = proposalRaw !== undefined ? hashJson(proposalRaw) : null;
 
   const policyMatches = policyHash === blob.payload.hashes.policy;
   const rulesMatch = rulesHash === blob.payload.hashes.rules;
   const analysisMatches = analysisHash === blob.payload.hashes.analysis;
   const evaluationMatches = evaluationHash === blob.payload.hashes.evaluation;
   const decisionMatches = replayed.decision === blob.payload.decision;
+  // null means "caller did not supply proposal — check skipped". Present
+  // in the response as `null` so the operator can see it was not asserted.
+  const proposalMatches: boolean | null =
+    proposalHash === null ? null : proposalHash === blob.payload.hashes.proposal;
 
   // 3. Re-verify the EIP-712 signature recovers to the agent address.
   let signatureRecovered = false;
@@ -1318,6 +1358,10 @@ app.post('/decision/verify', async (c) => {
   const agentAddressOk = validAgents.has(blob.signature.address.toLowerCase());
 
   const elapsedMs = Number(process.hrtime.bigint() - startNs) / 1_000_000;
+  // proposalMatches is null when not asserted; treat null as "pass" for the
+  // overall ok aggregate so legacy callers without the proposal field do
+  // not regress to ok=false. The check value in the response makes the
+  // skipped-vs-passed state legible.
   const ok =
     policyMatches &&
     rulesMatch &&
@@ -1325,7 +1369,8 @@ app.post('/decision/verify', async (c) => {
     evaluationMatches &&
     decisionMatches &&
     signatureRecovered &&
-    agentAddressOk;
+    agentAddressOk &&
+    proposalMatches !== false;
 
   return c.json({
     ok,
@@ -1341,12 +1386,17 @@ app.post('/decision/verify', async (c) => {
       decision: decisionMatches,
       signature: signatureRecovered,
       agent_address: agentAddressOk,
+      proposal_hash: proposalMatches,
     },
     hashes: {
       policy: { signed: blob.payload.hashes.policy, replayed: policyHash },
       rules: { signed: blob.payload.hashes.rules, replayed: rulesHash },
       analysis: { signed: blob.payload.hashes.analysis, replayed: analysisHash },
       evaluation: { signed: blob.payload.hashes.evaluation, replayed: evaluationHash },
+      proposal:
+        proposalHash === null
+          ? null
+          : { signed: blob.payload.hashes.proposal, replayed: proposalHash },
     },
     signed_agent_address: blob.signature.address,
     accepted_agent_addresses: [...validAgents],

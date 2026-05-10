@@ -395,6 +395,43 @@ export function resetUserData(user_id: string): {
   })();
 }
 
+/**
+ * Atomic wipe + reseed for /demo/reset. The previous shape (resetUserData
+ * then a separate saveProfile) was a two-step transaction split: if the
+ * second call ever throws (e.g. compileProfileToRules surfaces an unexpected
+ * error, or the SQLite write fails), the user is left profileless and the
+ * Reset Demo button on stage half-fails. Wrapping both in a single
+ * transaction keeps the user either pre-reset or fully seeded.
+ */
+export function resetAndSeedUserData(args: {
+  user_id: string;
+  profile: unknown;
+  rules: unknown;
+}): {
+  counts: { votes: number; decisions: number; profiles: number };
+  profile: ProfileRow;
+} {
+  return db.transaction(() => {
+    const votes = deleteUserVotes.run(args.user_id).changes;
+    const decisions = deleteUserDecisions.run(args.user_id).changes;
+    const profiles = deleteUserProfiles.run(args.user_id).changes;
+    appendAudit({
+      event_type: 'DEMO_RESET',
+      user_id: args.user_id,
+      payload: { votes, decisions, profiles },
+    });
+    const profile = saveProfile({
+      user_id: args.user_id,
+      profile: args.profile,
+      rules: args.rules,
+    });
+    return {
+      counts: { votes, decisions, profiles },
+      profile,
+    };
+  })();
+}
+
 // ---------------------------------------------------------------------------
 // Proposals (raw Snapshot records)
 // ---------------------------------------------------------------------------
