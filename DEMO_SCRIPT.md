@@ -26,6 +26,46 @@ the TEE wallet signs a real, replayable artifact about a real proposal.
     ```
   Should print four ✓ lines and "Demo peel matches DEMO_SCRIPT.md ACT 2".
 
+### Deploy checklist before the demo
+
+The deployed TEE image must be at the latest commit for ACT 5 to work.
+The seeded profile, `/decision/verify`, `/vote/submit`, AttestationCard,
+and the rebuilt SignAndVerifyCard all live in commits since the last
+deploy.
+
+```bash
+SHA=$(git rev-parse HEAD)
+ecloud compute app upgrade 0xc9645B5C0A942e4dE16525513FE36D48DA7D911d \
+  --env-file .env.deploy --log-visibility public --verifiable \
+  --repo https://github.com/CWagamanEure/governance-agent --commit "$SHA"
+```
+
+Then verify the deployed env from a curl:
+```bash
+curl -sS http://34.90.5.10:8000/env | jq
+# Expect MODEL_PUBLIC, MODEL_ROUTE_PUBLIC, GIT_COMMIT_PUBLIC matching $SHA.
+
+curl -sS http://34.90.5.10:8000/submit-allowlist
+# Expect {"spaces":["arbitrumfoundation.eth"]}.
+```
+
+### Active-proposal contingency for ACT 5c
+
+ACT 5c (live Snapshot submit) only fires if Arbitrum has an active
+Snapshot proposal at demo time AND the policy evaluates it as
+FOR/AGAINST/ABSTAIN. Check 30 minutes before:
+
+```bash
+curl -sS https://hub.snapshot.org/graphql -H 'content-type: application/json' \
+  -d '{"query":"{ proposals(first:5,where:{space:\"arbitrumfoundation.eth\",state:\"active\"},orderBy:\"end\",orderDirection:asc){id title end}}"}' | jq
+```
+
+If empty, narrate ACT 5c as: "today there are no open Arbitrum proposals
+to submit to — the Submit button is disabled with a clear reason. On a
+day when there is one, the wallet would post the signed envelope to
+Snapshot in a single click and you would see the public URL render right
+here." Sign + Verify + the Attestation card still carry the act.
+
 ## The exact data the demo relies on
 
 **3 LCE_FLIP proposals** (only ones that change decision through the peel):
@@ -186,46 +226,89 @@ upgrades still stay MANUAL_REVIEW (different rule fires:
 > has layered safety, not a single tunable knob. I can be aggressive on
 > category defaults; I can't accidentally turn off treasury review."
 
-## ACT 5 — Trust path: live sign + verify (60s)
+## ACT 5 — Trust path: sign → verify → submit (90s)
 
-Click Cancel back to ProfileCard. Scroll to the **"Live sign &amp; verify"**
-card.
+Click Cancel back to the Policy page. Two new cards are now visible below
+the ProfileCard: **Live sign · verify · submit** and **Attestation**.
+
+### 5a. Sign
 
 > "Every signed decision references the policy hash, the extraction hash,
 > and the engine output. Let me show you that loop end to end."
 
-Pick a real proposal from the dropdown (defaults to a real Arbitrum one).
-Click **"Sign decision (TEE)"**.
+The proposal dropdown is grouped: **Active on arbitrumfoundation.eth**
+on top (live-fetched from Snapshot's GraphQL), **Cached (closed)** below.
+Pick the highest active proposal. Click **"Sign decision (TEE)"**.
 
 A signed blob appears with:
-- the agent wallet's address (the per-user wallet derived inside the TEE),
-- the EIP-712 signature,
-- a "signature recovered: yes" check,
-- four content-addressed hashes (policy, rules, analysis, evaluation).
+- the agent wallet's address (per-user wallet derived inside the TEE),
+- the EIP-712 signature with a "signature recovered: yes" check,
+- a "vote envelope: signed choice 3" line if the policy decided
+  ABSTAIN (or FOR/AGAINST), or "not signed (MANUAL_REVIEW)" otherwise,
+- four copyable content-addressed hashes.
 
-> "The TEE-bound wallet just signed an EIP-712 blob committing to those
-> four hashes. The signing key never leaves the enclave."
+> "The TEE-bound wallet signed an EIP-712 blob committing to those four
+> hashes. The signing key never leaves the enclave. The vote envelope
+> for Snapshot is signed in the same call — only when the policy
+> produced an autovote-eligible decision."
+
+### 5b. Verify
 
 Click **"Verify (replay)"**.
 
-A green "✓ verified" stamp appears with a `replayed FOR in 4ms · engine 0.2.2`
-timestamp. Each individual hash check shows "match".
+A green "✓ verified" stamp appears with `replayed ABSTAIN in 4 ms · engine 0.2.2`.
+Each individual hash check shows "match".
 
-> "The verifier just re-derived the policy's rule set from the JSON,
-> re-ran the deterministic engine on the cached extraction, and recomputed
-> the evaluation hash. It matches what the TEE wallet signed. No LLM call
-> needed — extraction is hashed at source, signed off-chain, and replayed
-> on commodity hardware. Anyone with the blob can do this offline."
+> "The verifier re-derived the rule set from the policy JSON, re-ran the
+> deterministic engine on the cached extraction, and recomputed every
+> hash. It matches what the TEE wallet signed. No LLM needed —
+> extraction is hashed at source. Anyone with the blob can do this on
+> commodity hardware."
 
-> "Most AI agent products say 'trust the model.' We say: trust the wallet,
-> the hash, the rules, and the attestation. The model is just a translator
-> — and even its output is content-addressed, so you don't have to trust
-> the inference, you just have to verify it once."
+### 5c. Submit (only on an open Arbitrum proposal)
 
-[If `/debug/jwt` works against the deployed TEE: show the SEV-SNP
-attestation fields. If the gateway is still 401 (server-side at Eigen),
-skip this beat — the sign-then-verify loop carries the trust narrative
-on its own.]
+If an active Arbitrum proposal exists at demo time AND it evaluated to
+FOR/AGAINST/ABSTAIN, the **Submit to Snapshot** button is enabled.
+Otherwise it stays disabled with a clear reason ("Policy decided
+MANUAL_REVIEW — no autovote envelope to submit" or "This proposal is
+closed").
+
+If enabled, click **Submit to Snapshot**. A confirm dialog spells out
+the space, proposal, and choice. Confirm.
+
+A green "✓ accepted by Snapshot" stamp appears with a clickable URL
+pointing at the public Snapshot record:
+`https://snapshot.org/#/arbitrumfoundation.eth/proposal/0x...`
+
+Click the URL. Snapshot's UI shows the vote — cast by the agent wallet,
+labeled with the gov-agent app metadata.
+
+> "That's a real Snapshot vote, on a real DAO proposal, signed by a
+> wallet that is provably bound to attested code. The vote shows zero
+> voting power because this demo wallet has no ARB — that's the safety
+> property. The signature, the policy hash, the engine version — all
+> public, all replayable."
+
+### 5d. Attestation
+
+Scroll to the **Attestation** card.
+
+> "And here's the chain that makes the wallet itself trustworthy."
+
+Walk down the rows:
+- **Hardware**: GCP AMD SEV-SNP · secure boot · hardened image
+- **Code**: pinned commit, with a "view source" link at exactly that commit
+- **Container image**: GCP-signed digest (copyable)
+- **Launch measurement**: SEV-SNP measurement (copyable)
+- **Bound TPM evidence**: SHA256 of the request-scoped evidence
+- **Identity**: app id, agent wallet, GCE project + zone
+
+Click **"Verify on EigenCompute"** — opens the public verifier with the
+deployed app id pre-filled.
+
+> "Most AI agent products say 'trust the model.' We say: trust the
+> wallet, the hash, the rules, and the attestation. The model is just a
+> translator — and even its output is content-addressed."
 
 ## ACT 6 — Close (15s)
 
@@ -288,6 +371,8 @@ rule id on each diff item.
 
 ## Demo-day checklist
 
+- [ ] **Redeploy** to mainnet at the latest commit (see Deploy checklist
+      above). Confirm `GIT_COMMIT_PUBLIC` matches `git rev-parse HEAD`.
 - [ ] `npm run test:demo-peel` prints 4 × ✓ and "Demo peel matches".
 - [ ] `npm run test:sign-verify` prints 6 × ✓ and "Sign-then-verify loop closed".
 - [ ] Frontend trust ribbon shows "Attested in EigenCompute TEE".
@@ -295,8 +380,12 @@ rule id on each diff item.
 - [ ] Hit "Reset demo" once; confirm Policy page shows version 1 of seeded
       DEMO_PROFILE (4 stated values, GRANT in manual_review_categories).
 - [ ] Editor first paint shows "48 past proposals" and zero flipped.
-- [ ] Run a sign-then-verify dry-run on stage hardware; confirm signature
-      recovers and verify takes <100 ms.
+- [ ] AttestationCard renders Hardware/Code/Image/Measurement/Evidence rows
+      (not the "not running in TEE" fallback).
+- [ ] Run sign-then-verify on stage hardware; confirm signature recovers
+      and verify takes <100 ms.
+- [ ] Check Snapshot for active arbitrumfoundation.eth proposals 30 min
+      before the demo so you know whether ACT 5c can fire.
 
 ## Cost spent
 
