@@ -187,5 +187,24 @@ export async function submitVote(envelope: SignedVoteEnvelope): Promise<SubmitRe
   } catch {
     // leave as raw string
   }
+  // Snapshot's sequencer historically returns HTTP 200 with an {"error":...}
+  // body for application-level rejections (proposal closed, no voting power,
+  // duplicate vote, etc.). Treating that as success would put a green
+  // "✓ accepted by Snapshot" stamp on the demo screen with a URL pointing
+  // at a page where the vote does not exist — exactly the wrong story for
+  // the trust narrative. Inspect the parsed body and downgrade.
+  if (receipt && typeof receipt === 'object') {
+    const r = receipt as Record<string, unknown>;
+    const errVal = (r.error ?? r.error_description) as unknown;
+    if (errVal !== undefined && errVal !== null && errVal !== '') {
+      const errorMessage =
+        typeof errVal === 'string'
+          ? errVal
+          : typeof errVal === 'object' && errVal !== null && 'message' in errVal
+            ? String((errVal as { message: unknown }).message)
+            : JSON.stringify(errVal);
+      return { ok: false, status: res.status, error: errorMessage };
+    }
+  }
   return { ok: true, receipt };
 }
