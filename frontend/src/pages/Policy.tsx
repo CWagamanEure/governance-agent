@@ -18,6 +18,13 @@ type AuthState =
   | { status: 'anonymous' }
   | { status: 'authed'; address: string };
 
+// Mirror of src/server.ts parseSpaceList. Comma-separated, trimmed,
+// filters empties. Returns [] for undefined/null input.
+function parseSpaceList(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  return raw.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
 export function Policy({
   auth,
   profile,
@@ -99,6 +106,9 @@ export function Policy({
             token={token}
             profile={profile.profile}
             daoSpace={publicEnv?.DAO_SPACE_PUBLIC ?? null}
+            fallbackSpaces={parseSpaceList(
+              publicEnv?.SNAPSHOT_FALLBACK_SPACES_PUBLIC,
+            )}
           />
         </div>
       )}

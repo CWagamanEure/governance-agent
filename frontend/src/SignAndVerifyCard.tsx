@@ -46,6 +46,9 @@ type ProposalOption = {
   id: string;
   title: string;
   source: 'live-active' | 'cache';
+  // Snapshot space the proposal lives in. Always present for live-active;
+  // pulled from the cached row's space for cached options.
+  space: string;
   cached?: CachedProposalRow;
   endTs?: number;
 };
@@ -61,10 +64,16 @@ export function SignAndVerifyCard({
   token,
   profile,
   daoSpace,
+  fallbackSpaces,
 }: {
   token: string;
   profile: NonNullable<StoredProfile['profile']>;
   daoSpace: string | null;
+  // Additional Snapshot spaces to scan for active proposals. Used for ACT 5c
+  // when the primary DAO has nothing open at demo time. All spaces listed
+  // here must also be in the backend's submit-allowlist or submission will
+  // 403; the page already cross-references against /submit-allowlist.
+  fallbackSpaces: string[];
 }) {
   const [activeOptions, setActiveOptions] = useState<ProposalOption[]>([]);
   const [cachedOptions, setCachedOptions] = useState<ProposalOption[]>([]);
@@ -83,21 +92,33 @@ export function SignAndVerifyCard({
   // Load both data sources in parallel. Live-fetched active proposals are
   // preferred for the demo because they're the only ones Snapshot will accept
   // a vote for. Cached proposals stay available for sign+verify-only paths.
+  // Active proposals fanned across the primary DAO + every fallback space so
+  // ACT 5c has somewhere to land even when the primary has nothing open.
   useEffect(() => {
     let cancelled = false;
     const cachedP = getCachedProposals({ token, limit: 50 })
       .then((r) => r.items.filter((it) => it.proposal.space !== 'calibration.gov-agent'))
       .catch(() => [] as CachedProposalRow[]);
-    const activeP = daoSpace
-      ? fetchActiveProposals(daoSpace, 8).catch(() => [])
-      : Promise.resolve([] as Array<{ id: string; title: string; end: number }>);
 
-    Promise.all([cachedP, activeP]).then(([cached, active]) => {
+    const spacesToScan = [
+      ...(daoSpace ? [daoSpace] : []),
+      ...fallbackSpaces.filter((s) => s !== daoSpace),
+    ];
+    const activePerSpace = Promise.all(
+      spacesToScan.map((space) =>
+        fetchActiveProposals(space, 8)
+          .then((items) => items.map((p) => ({ space, ...p })))
+          .catch(() => [] as Array<{ space: string; id: string; title: string; end: number }>),
+      ),
+    ).then((perSpace) => perSpace.flat());
+
+    Promise.all([cachedP, activePerSpace]).then(([cached, active]) => {
       if (cancelled) return;
       const cachedOpts: ProposalOption[] = cached.map((c) => ({
         id: c.proposal.id,
         title: c.proposal.title ?? c.proposal.id.slice(0, 14),
         source: 'cache',
+        space: c.proposal.space,
         cached: c,
         endTs: c.proposal.end_ts ?? undefined,
       }));
@@ -105,18 +126,29 @@ export function SignAndVerifyCard({
         id: p.id,
         title: p.title,
         source: 'live-active',
+        space: p.space,
         endTs: p.end,
       }));
+      // Sort active proposals so the primary DAO comes first, then fallbacks
+      // in the order they were configured. Within a space, soonest-closing
+      // first so the default selection is the most-time-sensitive option.
+      const spaceOrder = new Map<string, number>(
+        spacesToScan.map((s, i) => [s, i] as const),
+      );
+      activeOpts.sort((a, b) => {
+        const so = (spaceOrder.get(a.space) ?? 99) - (spaceOrder.get(b.space) ?? 99);
+        if (so !== 0) return so;
+        return (a.endTs ?? 0) - (b.endTs ?? 0);
+      });
       setCachedOptions(cachedOpts);
       setActiveOptions(activeOpts);
-      // Prefer the soonest-closing active proposal as the default selection.
       const defaultId = activeOpts[0]?.id ?? cachedOpts[0]?.id ?? null;
       setSelectedId((curr) => curr ?? defaultId);
     });
     return () => {
       cancelled = true;
     };
-  }, [token, daoSpace]);
+  }, [token, daoSpace, fallbackSpaces]);
 
   const allOptions = useMemo(
     () => [...activeOptions, ...cachedOptions],
@@ -269,15 +301,16 @@ export function SignAndVerifyCard({
         disabled={step === 'signing' || step === 'verifying' || step === 'submitting'}
       >
         {allOptions.length === 0 && <option value="">(loading proposals&hellip;)</option>}
-        {activeOptions.length > 0 && (
-          <optgroup label={`Active on ${daoSpace ?? 'Snapshot'}`}>
-            {activeOptions.map((p) => (
-              <option key={p.id} value={p.id}>
-                {`[ACTIVE] ${p.title.slice(0, 80)}`}
-              </option>
-            ))}
-          </optgroup>
-        )}
+        {activeOptions.length > 0 &&
+          groupBySpace(activeOptions).map(([space, opts]) => (
+            <optgroup key={space} label={`Active on ${space}`}>
+              {opts.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {`[ACTIVE] ${p.title.slice(0, 80)}`}
+                </option>
+              ))}
+            </optgroup>
+          ))}
         {cachedOptions.length > 0 && (
           <optgroup label="Cached (closed) — sign &amp; verify only">
             {cachedOptions.map((p) => (
@@ -288,9 +321,11 @@ export function SignAndVerifyCard({
           </optgroup>
         )}
       </select>
-      {activeOptions.length === 0 && daoSpace && (
+      {activeOptions.length === 0 && (daoSpace || fallbackSpaces.length > 0) && (
         <p className="muted tiny" style={{ marginTop: 4 }}>
-          No active Snapshot proposals on <code>{daoSpace}</code>; submit will be disabled.
+          No active Snapshot proposals on{' '}
+          <code>{[daoSpace, ...fallbackSpaces].filter(Boolean).join(', ')}</code>; submit will
+          be disabled.
         </p>
       )}
 
@@ -507,4 +542,20 @@ function choiceLabel(choice: number): string {
   if (choice === 2) return 'AGAINST';
   if (choice === 3) return 'ABSTAIN';
   return `choice ${choice}`;
+}
+
+// Group active proposals by their Snapshot space, preserving insertion order.
+// activeOptions is already sorted primary-first by spaceOrder, so this
+// produces the same primary-first grouping for the optgroups.
+function groupBySpace(opts: ProposalOption[]): Array<[string, ProposalOption[]]> {
+  const seenSpaces: string[] = [];
+  const grouped = new Map<string, ProposalOption[]>();
+  for (const opt of opts) {
+    if (!grouped.has(opt.space)) {
+      seenSpaces.push(opt.space);
+      grouped.set(opt.space, []);
+    }
+    grouped.get(opt.space)!.push(opt);
+  }
+  return seenSpaces.map((s) => [s, grouped.get(s)!]);
 }
