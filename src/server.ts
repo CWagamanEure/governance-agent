@@ -103,6 +103,22 @@ function walletAccount() {
   return mnemonicToAccount(mnemonic);
 }
 
+/**
+ * True when operator-only diagnostic endpoints (/debug/env-keys,
+ * /extract-test, /debug/jwt) are exposed. These can leak runtime details
+ * (env var presence) or burn LLM tokens, so they default to OFF.
+ *
+ * Two env flags are honored for back-compat with EIGEN_GATEWAY_DEBUG.md:
+ *   - ENABLE_DEBUG_ENDPOINTS=true (preferred; covers all)
+ *   - ENABLE_DEBUG_JWT=true       (legacy; also unlocks all debug paths)
+ */
+function isDebugEnabled(): boolean {
+  return (
+    process.env.ENABLE_DEBUG_ENDPOINTS === 'true' ||
+    process.env.ENABLE_DEBUG_JWT === 'true'
+  );
+}
+
 function publicEnv(): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
@@ -230,6 +246,11 @@ app.post('/wallet/sign-test', async (c) => {
  * not by an HTTP endpoint.
  */
 app.post('/extract-test', async (c) => {
+  // Operator-only smoke test: makes a paid LLM call. Hidden behind the debug
+  // flag so a public TEE URL can't be used to drain budget.
+  if (!isDebugEnabled()) {
+    return c.json({ error: 'debug extraction endpoint disabled' }, 404);
+  }
   let payload: any;
   try {
     payload = await c.req.json();
@@ -849,25 +870,37 @@ app.post('/policy/preview', async (c) => {
 /**
  * GET /audit
  *
- * Hash-chained audit log. Optionally filter by user_id.
+ * Hash-chained audit log scoped to the authenticated user. The user_id
+ * query parameter is intentionally ignored — only the wallet that signed in
+ * can see its own events. (Cross-user audit access would require a separate
+ * admin role this product does not yet have.)
  *
- *   ?user_id=...        — only events for this user
  *   ?limit=100          — max rows (default 100, hard cap 1000)
  */
 app.get('/audit', (c) => {
-  const user_id = c.req.query('user_id') || undefined;
+  let address: string;
+  try {
+    address = requireAuth(c);
+  } catch {
+    return c.json({ error: 'authentication required' }, 401);
+  }
+  const user = findOrCreateUser(address);
   const limit = c.req.query('limit') ? parseInt(c.req.query('limit')!, 10) : 100;
-  return c.json({ items: listAudit({ user_id, limit }) });
+  return c.json({ items: listAudit({ user_id: user.id, limit }) });
 });
 
 /**
  * GET /debug/env-keys
  *
- * Temporary diagnostic. Returns the sorted list of all env var NAMES (no values).
- * Lets us see what the TEE runtime injected without leaking any secret. Remove
- * once the extraction pipeline is stable.
+ * Operator diagnostic: sorted list of env var NAMES (no values). Useful for
+ * confirming what the TEE runtime injected. Hidden behind isDebugEnabled()
+ * because enumerating keys also discloses presence of sensitive ones
+ * (KMS_AUTH_JWT, MNEMONIC, etc.).
  */
 app.get('/debug/env-keys', (c) => {
+  if (!isDebugEnabled()) {
+    return c.json({ error: 'debug env-keys endpoint disabled' }, 404);
+  }
   const keys = Object.keys(process.env).sort();
   return c.json({ count: keys.length, keys });
 });
@@ -876,11 +909,11 @@ app.get('/debug/env-keys', (c) => {
  * GET /debug/jwt
  *
  * Mints a fresh JWT via the EigenCompute attestation flow and returns the raw
- * token plus decoded header/payload. Disabled unless ENABLE_DEBUG_JWT=true.
- * Use only when debugging gateway verification with Eigen support.
+ * token plus decoded header/payload. Use only when debugging gateway
+ * verification with Eigen support.
  */
 app.get('/debug/jwt', async (c) => {
-  if (process.env.ENABLE_DEBUG_JWT !== 'true') {
+  if (!isDebugEnabled()) {
     return c.json({ error: 'debug JWT endpoint disabled' }, 404);
   }
   const kmsServerURL = process.env.KMS_SERVER_URL;
