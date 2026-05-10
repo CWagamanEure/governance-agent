@@ -100,7 +100,16 @@ export function PolicyEditor({
         setDraftDecisions(r.decisions);
         setError(null);
       } catch (e: any) {
-        setError(e?.message ?? String(e));
+        const msg = e?.message ?? String(e);
+        // On a 401 the displayed diff is stale — every keystroke is silently
+        // failing. Clear draft results so the panel doesn't show a confidently-
+        // wrong number while the user wonders why toggles do nothing.
+        if (/\b401\b/.test(msg)) {
+          setDraftDecisions(null);
+          setError('session expired — sign in again to keep editing');
+        } else {
+          setError(msg);
+        }
       } finally {
         setPreviewing(false);
       }
@@ -138,6 +147,14 @@ export function PolicyEditor({
         });
       }
     }
+    // Calibration-corpus flips first so the "find obvious patterns" arc is
+    // visible in the panel itself; within each corpus, autovote outcomes
+    // (FOR/AGAINST/ABSTAIN) before MANUAL_REVIEW so the autovote story leads.
+    const decisionWeight = (d: Decision) => (d === 'MANUAL_REVIEW' ? 1 : 0);
+    out.sort((a, b) => {
+      if (a.corpus !== b.corpus) return a.corpus === 'calibration' ? -1 : 1;
+      return decisionWeight(a.to) - decisionWeight(b.to);
+    });
     return out;
   }, [baselineDecisions, draftDecisions, cached]);
 
@@ -258,16 +275,20 @@ function CategoryDefaultsField({ draft, setDraft }: { draft: Profile; setDraft: 
     setDraft({ ...draft, category_defaults: defaults.filter((_, j) => j !== i) });
   }
   function add() {
+    // Default to action=FOR so the dollar-cap and milestones/reporting controls
+    // render immediately. ACT 2 of the demo wants the operator to add a single
+    // GRANT FOR rule on stage; defaulting to MANUAL_REVIEW used to hide the
+    // condition fields and force a follow-up dropdown change.
     setDraft({
       ...draft,
       category_defaults: [
         ...defaults,
         {
           category: 'GRANT',
-          action: 'MANUAL_REVIEW',
-          max_treasury_usd: null,
-          require_milestones: false,
-          require_reporting: false,
+          action: 'FOR',
+          max_treasury_usd: 500_000,
+          require_milestones: true,
+          require_reporting: true,
           proposer_types: [],
           reason: 'manually added',
         },
@@ -514,11 +535,13 @@ function DiffPanel({
       </div>
 
       <div className="diff-list">
-        {diffs.length === 0 ? (
+        {!draftDecisions ? (
+          <p className="muted tiny">{previewing ? 'Recomputing…' : 'No live preview yet.'}</p>
+        ) : diffs.length === 0 ? (
           <p className="muted tiny">
-            {draftDecisions && baselineDecisions && draftDecisions.length === baselineDecisions.length
-              ? 'No proposals would have changed under the current edits.'
-              : 'Loading…'}
+            {previewing
+              ? 'Recomputing…'
+              : 'No proposals would have changed under the current edits.'}
           </p>
         ) : (
           <>
@@ -537,16 +560,21 @@ function DiffPanel({
                   <span className={`diff-from action-${d.from}`}>{d.from}</span>
                   <span className="diff-arrow">→</span>
                   <span className={`diff-to action-${d.to}`}>{d.to}</span>
-                  {d.ruleIds.length > 0 && (
-                    <span
-                      className="diff-rule-id"
-                      title={d.ruleIds.length > 1 ? `Triggered rules:\n${d.ruleIds.join('\n')}` : `Triggered rule: ${d.ruleIds[0]}`}
-                    >
-                      {d.ruleIds[0]}
-                      {d.ruleIds.length > 1 && <span className="diff-rule-more"> +{d.ruleIds.length - 1}</span>}
-                    </span>
-                  )}
                 </div>
+                {d.ruleIds.length > 0 && (
+                  <div className="diff-item-rule">
+                    <span className="diff-rule-label">binding rule</span>
+                    <code className="diff-rule-id">{d.ruleIds[0]}</code>
+                    {d.ruleIds.length > 1 && (
+                      <span
+                        className="diff-rule-more"
+                        title={`also fired:\n${d.ruleIds.slice(1).join('\n')}`}
+                      >
+                        +{d.ruleIds.length - 1}
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </>

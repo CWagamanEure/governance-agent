@@ -8,6 +8,7 @@ import { type StoredProfile } from '../api';
 import { getStoredToken } from '../lib/auth';
 import { Onboarding } from '../Onboarding';
 import { PolicyEditor } from '../PolicyEditor';
+import { SignAndVerifyCard } from '../SignAndVerifyCard';
 import { ConnectGate, SectionHeading } from './Activity';
 
 type AuthState =
@@ -82,6 +83,11 @@ export function Policy({
         onEditRules={() => setEditing(true)}
         onRecompile={onEdit}
       />
+      {token && profile.profile && (
+        <div style={{ marginTop: 16 }}>
+          <SignAndVerifyCard token={token} profile={profile.profile} />
+        </div>
+      )}
     </>
   );
 }

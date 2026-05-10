@@ -236,7 +236,12 @@ function confidenceFor(analysis: AnalysisForPolicy, field: string, fallback: num
 }
 
 function lowConfidencePolicyInputs(analysis: AnalysisForPolicy, fallback: number): boolean {
-  if (analysis.uncertainty.low_confidence_fields.length > 0) return true;
+  // The rule reason this predicate gates says "policy-critical extracted fields".
+  // Match the predicate to the claim: a low-confidence extraction on a field the
+  // engine never reads (e.g. governance.constitutional_change when the active
+  // path is META_GOVERNANCE category default) shouldn't promote to MANUAL_REVIEW.
+  const lowConf = analysis.uncertainty.low_confidence_fields ?? [];
+  if (lowConf.some((field) => POLICY_INPUT_FIELDS.includes(field))) return true;
   return POLICY_INPUT_FIELDS.some(
     (field) => confidenceFor(analysis, field, fallback) < LOW_CONFIDENCE_THRESHOLD,
   );

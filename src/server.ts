@@ -63,6 +63,15 @@ import {
 import { userWallet } from './wallets.js';
 import { compileProfile } from './profile-compiler.js';
 import { buildAttestationReport } from './attestation.js';
+import { DEMO_PROFILE } from './demo-profile.js';
+import {
+  hashJson,
+  DECISION_BLOB_DOMAIN,
+  DECISION_BLOB_TYPES,
+  type DecisionBlobMessage,
+  type SignedDecisionBlob,
+} from './decision-blob.js';
+import { verifyTypedData } from 'viem';
 
 const VERSION = '0.2.0';
 const WALLET_PATH = "m/44'/60'/0'/0/0"; // viem default, documented for responses
@@ -634,22 +643,56 @@ app.get('/profile', (c) => {
 /**
  * POST /demo/reset
  *
- * Wipes the authed user's policy versions and voting history so the demo can
- * be replayed end-to-end (onboarding → calibration → editor → activity) from
- * a clean slate. Audit-logged. The user row + SIWE session are preserved —
- * after this call the client should refetch /profile, which will return a
- * 404-shaped null and route the user to onboarding.
+ * Resets the authed user to the deterministic demo state: wipes votes,
+ * decisions, and any saved policy versions, then installs the hand-tuned
+ * DEMO_PROFILE so the four-step ACT-2 peel produces 1/1/1/3 flips against the
+ * cached corpus. Audit-logged.
+ *
+ * Optional body { skip_seed: true } restores the previous "wipe to onboarding"
+ * behavior — useful when you want to re-record the calibration session.
  */
-app.post('/demo/reset', (c) => {
+app.post('/demo/reset', async (c) => {
   let address: string;
   try {
     address = requireAuth(c);
   } catch {
     return c.json({ error: 'authentication required' }, 401);
   }
+
+  let body: { skip_seed?: boolean } = {};
+  try {
+    if (c.req.header('content-length') && Number(c.req.header('content-length')) > 0) {
+      body = await c.req.json();
+    }
+  } catch {
+    // tolerate empty bodies
+  }
+
   const user = findOrCreateUser(address);
   const counts = resetUserData(user.id);
-  return c.json({ ok: true, ...counts });
+
+  if (body.skip_seed) {
+    return c.json({ ok: true, seeded: false, ...counts });
+  }
+
+  const rules = compileProfileToRules(DEMO_PROFILE);
+  const seeded = saveProfile({
+    user_id: user.id,
+    profile: DEMO_PROFILE,
+    rules,
+  });
+
+  return c.json({
+    ok: true,
+    seeded: true,
+    ...counts,
+    profile: {
+      id: seeded.id,
+      version: seeded.version,
+      hash: seeded.hash,
+      created_at: seeded.created_at,
+    },
+  });
 });
 
 /**
@@ -846,6 +889,120 @@ app.get('/debug/jwt', async (c) => {
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
+});
+
+/**
+ * POST /decision/verify
+ *
+ * Independently re-runs the deterministic policy engine against a signed
+ * decision blob's inputs and confirms the result matches what was signed.
+ * Demonstrates the trust path's load-bearing claim: anyone who has the
+ * extraction + policy can replay the evaluation without re-running the LLM
+ * and confirm what the TEE-bound wallet signed.
+ *
+ * Body:
+ *   {
+ *     blob:     SignedDecisionBlob,   // produced by /pipeline/run with sign=true
+ *     policy:   PolicyProfileT,        // the policy that was evaluated
+ *     analysis: ProposalAnalysisT      // the cached / live extraction
+ *   }
+ *
+ * Returns: per-check verdicts plus an elapsed-ms timing.
+ */
+app.post('/decision/verify', async (c) => {
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid JSON body' }, 400);
+  }
+
+  const blob = body?.blob as SignedDecisionBlob | undefined;
+  const policyParsed = PolicyProfileSchema.safeParse(body?.policy);
+  const analysis = body?.analysis as AnalysisForPolicy | undefined;
+
+  if (!blob || !blob.payload || !blob.signature || !policyParsed.success || !analysis) {
+    return c.json({ error: "body must include 'blob', 'policy', and 'analysis'" }, 400);
+  }
+  const policy = policyParsed.data;
+
+  const startNs = process.hrtime.bigint();
+
+  // 1. Re-derive the deterministic rule set from the supplied policy and
+  //    re-run the engine. No LLM call. No DB read. Pure replay.
+  const rules = compileProfileToRules(policy);
+  const replayed = evaluatePolicy(analysis, policy, rules, {
+    id: blob.payload.proposal.id,
+    space: blob.payload.proposal.space,
+  });
+
+  // 2. Hash the supplied inputs the same way decision-blob.ts does at sign
+  //    time. If anyone substituted a different policy or analysis, the hashes
+  //    won't match the blob's commitments.
+  const policyHash = hashJson(policy);
+  const rulesHash = hashJson(rules);
+  const analysisHash = hashJson(analysis);
+  const evaluationHash = hashJson(replayed);
+
+  const policyMatches = policyHash === blob.payload.hashes.policy;
+  const rulesMatch = rulesHash === blob.payload.hashes.rules;
+  const analysisMatches = analysisHash === blob.payload.hashes.analysis;
+  const evaluationMatches = evaluationHash === blob.payload.hashes.evaluation;
+  const decisionMatches = replayed.decision === blob.payload.decision;
+
+  // 3. Re-verify the EIP-712 signature recovers to the agent address.
+  let signatureRecovered = false;
+  let signatureError: string | undefined;
+  try {
+    const message = blob.signature.data.message as DecisionBlobMessage;
+    // The transport JSON-encodes bigints as numbers/strings; re-coerce.
+    const normalized: DecisionBlobMessage = {
+      ...message,
+      createdAt: BigInt(message.createdAt as unknown as string | number | bigint),
+    };
+    signatureRecovered = await verifyTypedData({
+      address: blob.signature.address,
+      domain: DECISION_BLOB_DOMAIN,
+      types: DECISION_BLOB_TYPES,
+      primaryType: 'DecisionBlob',
+      message: normalized,
+      signature: blob.signature.sig,
+    });
+  } catch (e) {
+    signatureError = e instanceof Error ? e.message : String(e);
+  }
+
+  const elapsedMs = Number(process.hrtime.bigint() - startNs) / 1_000_000;
+  const ok =
+    policyMatches &&
+    rulesMatch &&
+    analysisMatches &&
+    evaluationMatches &&
+    decisionMatches &&
+    signatureRecovered;
+
+  return c.json({
+    ok,
+    elapsed_ms: Math.round(elapsedMs * 100) / 100,
+    engine_version: replayed.engine_version,
+    replayed_decision: replayed.decision,
+    signed_decision: blob.payload.decision,
+    checks: {
+      policy_hash: policyMatches,
+      rules_hash: rulesMatch,
+      analysis_hash: analysisMatches,
+      evaluation_hash: evaluationMatches,
+      decision: decisionMatches,
+      signature: signatureRecovered,
+    },
+    hashes: {
+      policy: { signed: blob.payload.hashes.policy, replayed: policyHash },
+      rules: { signed: blob.payload.hashes.rules, replayed: rulesHash },
+      analysis: { signed: blob.payload.hashes.analysis, replayed: analysisHash },
+      evaluation: { signed: blob.payload.hashes.evaluation, replayed: evaluationHash },
+    },
+    signature_error: signatureError,
+  });
 });
 
 app.get('/attestation', async (c) => {

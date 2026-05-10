@@ -350,6 +350,47 @@ export async function previewPolicy(args: {
 }
 
 // ---------------------------------------------------------------------------
+// Decision blob verify — independent replay of a signed evaluation
+// ---------------------------------------------------------------------------
+
+export type DecisionVerifyResult = {
+  ok: boolean;
+  elapsed_ms: number;
+  engine_version: string;
+  replayed_decision: Decision;
+  signed_decision: Decision;
+  checks: {
+    policy_hash: boolean;
+    rules_hash: boolean;
+    analysis_hash: boolean;
+    evaluation_hash: boolean;
+    decision: boolean;
+    signature: boolean;
+  };
+  hashes: {
+    policy: { signed: string; replayed: string };
+    rules: { signed: string; replayed: string };
+    analysis: { signed: string; replayed: string };
+    evaluation: { signed: string; replayed: string };
+  };
+  signature_error?: string;
+};
+
+export async function verifyDecisionBlob(args: {
+  blob: any;
+  policy: any;
+  analysis: any;
+}): Promise<DecisionVerifyResult> {
+  const r = await fetch(`${BACKEND_URL}/decision/verify`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(args),
+  });
+  if (!r.ok) throw new Error(`verify failed: ${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+// ---------------------------------------------------------------------------
 // Snapshot — fetch a single proposal by id
 // ---------------------------------------------------------------------------
 
