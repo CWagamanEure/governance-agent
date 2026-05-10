@@ -14,6 +14,7 @@
 import { useState, useEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { copyText } from './lib/clipboard';
+import { getStoredToken } from './lib/auth';
 
 type AuthState =
   | { status: 'loading' }
@@ -202,7 +203,10 @@ function AccountModal({
 function useStoredTokenExpiry(): { label: string; urgent: boolean } | null {
   const [expiry, setExpiry] = useState<{ label: string; urgent: boolean } | null>(null);
   useEffect(() => {
-    const token = localStorage.getItem('gov-agent.token');
+    // Read via the canonical helper instead of hardcoding the storage key
+    // — drift between this file and lib/auth.ts would silently blank the
+    // expiry display with no test to catch it.
+    const token = getStoredToken();
     if (!token) return;
     const parts = token.split('.');
     if (parts.length !== 3) return;
