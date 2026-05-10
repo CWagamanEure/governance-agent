@@ -29,13 +29,8 @@ function Hero() {
           signed by a key only the attested code can use.
         </p>
         <div className="hero-ctas">
-          <a
-            className="btn primary"
-            href="#/app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Launch app ↗
+          <a className="btn primary" href="#/app">
+            Launch app
           </a>
           <a
             className="btn"
@@ -215,13 +210,8 @@ function Footer() {
             isn't required to browse — you only need it to actually cast a vote.
           </p>
         </div>
-        <a
-          className="btn primary"
-          href="#/app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Launch app ↗
+        <a className="btn primary" href="#/app">
+          Launch app
         </a>
       </div>
       <p className="tiny" style={{ marginTop: 32, textAlign: 'center', color: 'var(--fg-soft)' }}>

@@ -24,6 +24,7 @@ import {
   type DecisionVerifyResult,
   type StoredProfile,
 } from './api';
+import { HashCopyChip } from './HashCopyChip';
 
 type Step = 'idle' | 'signing' | 'signed' | 'verifying' | 'verified' | 'error';
 
@@ -226,14 +227,23 @@ function SignedSummary({
         />
       </div>
       <div className="dft-label" style={{ marginTop: 10 }}>
-        Content-addressed inputs
+        Content-addressed inputs (click to copy)
       </div>
       <div className="sv-grid">
-        <SvRow label="policy hash" value={short(payload.hashes.policy, 10, 6)} title={payload.hashes.policy} mono />
-        <SvRow label="rules hash" value={short(payload.hashes.rules, 10, 6)} title={payload.hashes.rules} mono />
-        <SvRow label="analysis hash" value={short(payload.hashes.analysis, 10, 6)} title={payload.hashes.analysis} mono />
-        <SvRow label="evaluation hash" value={short(payload.hashes.evaluation, 10, 6)} title={payload.hashes.evaluation} mono />
+        <SvHashRow label="policy hash" hash={payload.hashes.policy} />
+        <SvHashRow label="rules hash" hash={payload.hashes.rules} />
+        <SvHashRow label="analysis hash" hash={payload.hashes.analysis} />
+        <SvHashRow label="evaluation hash" hash={payload.hashes.evaluation} />
       </div>
+    </div>
+  );
+}
+
+function SvHashRow({ label, hash }: { label: string; hash: string }) {
+  return (
+    <div className="sv-row">
+      <span className="sv-row-label">{label}</span>
+      <HashCopyChip hash={hash} prefixChars={10} label={label} />
     </div>
   );
 }

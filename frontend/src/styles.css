@@ -1040,7 +1040,44 @@ input[type="range"] {
 
 /* Profile card */
 .profile-card { padding: 22px 22px 18px; }
-.profile-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.profile-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; gap: 12px; }
+.profile-head-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* Version pill — used in ProfileCard meta and PolicyEditor header so the
+   reviewer always knows which numbered policy version is on screen. */
+.profile-version-pill {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-elev-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+}
+
+/* Click-to-copy hash chip. Used in ProfileCard and SignAndVerifyCard so a
+   reviewer can paste the hash into Slack post-demo without opening devtools. */
+.hash-copy-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.1s, border-color 0.1s;
+}
+.hash-copy-chip:hover { background: var(--bg-elev); border-color: var(--accent); }
+.hash-copy-chip code { background: transparent; padding: 0; color: inherit; font-size: inherit; }
+.hash-copy-chip .copy-icon { color: var(--fg-soft); font-size: 12px; }
 
 .axes { display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px; }
 .axis-row {
@@ -1984,6 +2021,24 @@ input[type="range"] {
 
 .diff-item-calibration {
   border-left-color: #d4a657;
+}
+
+/* Pre-allocated width for inline counts (e.g. "your last 48 proposals") so
+   the surrounding text doesn't reflow when "—" is replaced by the real
+   number on first paint. */
+.num-stable {
+  display: inline-block;
+  min-width: 2ch;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Status string in the diff panel head; pre-allocated width keeps the
+   header stable as "recomputing…" alternates with "48 past proposals". */
+.diff-head-status {
+  display: inline-block;
+  min-width: 11ch;
+  text-align: right;
 }
 
 .editor-restored-banner {

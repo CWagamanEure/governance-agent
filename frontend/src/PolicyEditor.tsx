@@ -295,9 +295,16 @@ export function PolicyEditor({
     <div className="policy-editor">
       <div className="editor-head">
         <div>
-          <h3 style={{ margin: 0 }}>Edit policy rules</h3>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+            <h3 style={{ margin: 0 }}>Edit policy rules</h3>
+            <span className="profile-version-pill" title="Saving creates the next version">
+              editing v{baseProfile.version}
+            </span>
+          </div>
           <p className="muted tiny" style={{ marginTop: 4 }}>
-            Changes show what would have happened to your last {cached?.length ?? '…'} proposals — live.
+            Changes show what would have happened to your last{' '}
+            <span className="num-stable">{cached?.length ?? '—'}</span>{' '}
+            proposals — live.
           </p>
         </div>
         <div className="editor-actions">
@@ -649,8 +656,15 @@ function DiffPanel({
     <div className="diff-panel">
       <div className="diff-head">
         <h4 style={{ margin: 0 }}>What would have changed</h4>
-        <span className="muted tiny">
-          {previewing ? 'recomputing…' : `${cached?.length ?? 0} past proposals`}
+        <span className="muted tiny diff-head-status">
+          {previewing
+            ? 'recomputing…'
+            : (
+                <>
+                  <span className="num-stable">{cached?.length ?? '—'}</span>{' '}
+                  past proposals
+                </>
+              )}
         </span>
       </div>
 

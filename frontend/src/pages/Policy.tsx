@@ -10,6 +10,7 @@ import { Onboarding } from '../Onboarding';
 import { PolicyEditor } from '../PolicyEditor';
 import { SignAndVerifyCard } from '../SignAndVerifyCard';
 import { ConnectGate, SectionHeading } from './Activity';
+import { HashCopyChip } from '../HashCopyChip';
 
 type AuthState =
   | { status: 'loading' }
@@ -107,11 +108,10 @@ function ProfileCard({
   return (
     <div className="card profile-card">
       <div className="profile-head">
-        <div>
-          <div className="muted tiny">
-            version {profile.profile.version} · hash{' '}
-            <code>{profile.profile.hash.slice(0, 10)}…</code>
-          </div>
+        <div className="profile-head-meta">
+          <span className="profile-version-pill">v{profile.profile.version}</span>
+          <span className="muted tiny">hash</span>
+          <HashCopyChip hash={profile.profile.hash} label="policy hash" />
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={onRecompile} className="btn small" title="Restart onboarding from your values">
