@@ -72,6 +72,11 @@ function parseUsdInput(raw: string, previous: number | null): number | null {
     multiplier = 1_000_000;
     body = cleaned.slice(0, -1);
   }
+  // After stripping a multiplier suffix, the body must still contain a
+  // number. "k" alone or "$,k" used to coerce Number("") → 0 → multiplier
+  // returned 0, silently neutering the rule (a $0 cap matches no treasury
+  // spend > 0). Treat empty-body-after-suffix as garbage and keep previous.
+  if (body === '') return previous;
   const parsed = Number(body) * multiplier;
   if (!Number.isFinite(parsed) || parsed < 0) return previous;
   return parsed;
