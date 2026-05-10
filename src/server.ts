@@ -340,18 +340,29 @@ app.post('/vote/sign', async (c) => {
   const reason = typeof body?.reason === 'string' ? body.reason : '';
   const shouldSubmit = body?.submit === true;
 
-  // Allowlist check before signing — saves the wallet roundtrip if the space
-  // would be rejected at submit time anyway. Sign-only without submit is fine
-  // against any space (no public side effect).
-  if (shouldSubmit && !isSpaceAllowedForSubmit(space)) {
-    return c.json(
-      {
-        error: 'space_not_allowed',
-        message: `Refusing to submit to ${space}. Set SUBMIT_ALLOWLIST to allow it.`,
-        allowlist: getSubmitAllowlist(),
-      },
-      403,
-    );
+  // Submission is a public side effect (signed message lands in Snapshot's
+  // sequencer with this app's identity attached). Gate with auth so the
+  // audit log can attribute it; sign-only stays open for the legacy
+  // curl-demo path that returns the envelope without posting it.
+  let submitterUserId: string | null = null;
+  if (shouldSubmit) {
+    let address: string;
+    try {
+      address = requireAuth(c);
+    } catch {
+      return c.json({ error: 'authentication required for submit:true' }, 401);
+    }
+    if (!isSpaceAllowedForSubmit(space)) {
+      return c.json(
+        {
+          error: 'space_not_allowed',
+          message: `Refusing to submit to ${space}. Set SUBMIT_ALLOWLIST to allow it.`,
+          allowlist: getSubmitAllowlist(),
+        },
+        403,
+      );
+    }
+    submitterUserId = findOrCreateUser(address).id;
   }
 
   let acct;
@@ -377,8 +388,17 @@ app.post('/vote/sign', async (c) => {
   const recovered = await verifyEnvelope(envelope);
 
   let submission: unknown = null;
-  if (shouldSubmit) {
-    submission = await submitVote(envelope);
+  if (shouldSubmit && submitterUserId) {
+    const result = await submitVote(envelope);
+    submission = result;
+    auditVoteSubmission({
+      user_id: submitterUserId,
+      space,
+      proposal: envelope.data.message.proposal,
+      choice: envelope.data.message.choice,
+      from: envelope.address,
+      result,
+    });
   }
 
   // Convert bigint timestamp for JSON response
@@ -449,9 +469,18 @@ app.post('/pipeline/run', async (c) => {
     rawOverride === 1 || rawOverride === 2 || rawOverride === 3 ? rawOverride : null;
   const submitToSnapshot = body?.submit === true;
 
-  // Allowlist gate for the integrated pipeline submit path. The proposal's
-  // space comes from the supplied Snapshot proposal record.
+  // Submission is a public side effect on Snapshot. Gate on auth so the
+  // audit log can attribute it; allowlist gate ensures we never POST to a
+  // space we did not pre-approve. The proposal's space comes from the
+  // supplied Snapshot proposal record.
+  let submitterUserIdForPipeline: string | null = null;
   if (submitToSnapshot) {
+    let submitAddress: string;
+    try {
+      submitAddress = requireAuth(c);
+    } catch {
+      return c.json({ error: 'authentication required for submit:true' }, 401);
+    }
     const targetSpace = proposal.space?.id ?? '';
     if (!isSpaceAllowedForSubmit(targetSpace)) {
       return c.json(
@@ -463,6 +492,7 @@ app.post('/pipeline/run', async (c) => {
         403,
       );
     }
+    submitterUserIdForPipeline = findOrCreateUser(submitAddress).id;
   }
 
   // If authenticated:
@@ -520,6 +550,21 @@ app.post('/pipeline/run', async (c) => {
     override_choice: overrideChoice,
     submit: submitToSnapshot,
   });
+
+  // Audit any actually-attempted Snapshot submission. The pipeline only
+  // populates result.submission when it called submitVote, regardless of
+  // whether Snapshot accepted; logging both ok and not-ok keeps the audit
+  // chain complete.
+  if (submitToSnapshot && submitterUserIdForPipeline && result.vote && result.submission) {
+    auditVoteSubmission({
+      user_id: submitterUserIdForPipeline,
+      space: proposal.space?.id ?? '',
+      proposal: proposal.id,
+      choice: result.vote.choice,
+      from: result.vote.envelope.address,
+      result: result.submission,
+    });
+  }
 
   // bigint timestamps in vote envelopes don't JSON-serialize natively
   const safe = JSON.parse(
@@ -1063,18 +1108,13 @@ app.post('/vote/submit', async (c) => {
   }
 
   const result = await submitVote(restoredEnvelope);
-  appendAudit({
-    event_type: 'VOTE_SUBMITTED',
+  auditVoteSubmission({
     user_id: findOrCreateUser(address).id,
-    payload: {
-      space: targetSpace,
-      proposal: envelope.data.message.proposal,
-      choice: envelope.data.message.choice,
-      from: envelope.address,
-      ok: result.ok,
-      receipt: result.ok ? result.receipt : undefined,
-      error: result.ok ? undefined : result.error,
-    },
+    space: targetSpace,
+    proposal: envelope.data.message.proposal,
+    choice: envelope.data.message.choice,
+    from: envelope.address,
+    result,
   });
 
   // Return both the raw result and a Snapshot UI link so the frontend can
@@ -1116,6 +1156,35 @@ function getSubmitAllowlist(): string[] {
 
 function isSpaceAllowedForSubmit(space: string): boolean {
   return getSubmitAllowlist().includes(space);
+}
+
+/**
+ * Append a VOTE_SUBMITTED row to the audit log. Called from every code path
+ * that POSTs a signed envelope to Snapshot's sequencer — without this, two
+ * of three submit paths (/vote/sign, /pipeline/run) would leave no audit
+ * trail and the trust narrative ("every vote audited") would be a half-truth.
+ */
+function auditVoteSubmission(args: {
+  user_id: string;
+  space: string;
+  proposal: string;
+  choice: number;
+  from: string;
+  result: { ok: true; receipt: unknown } | { ok: false; status: number; error: string };
+}) {
+  appendAudit({
+    event_type: 'VOTE_SUBMITTED',
+    user_id: args.user_id,
+    payload: {
+      space: args.space,
+      proposal: args.proposal,
+      choice: args.choice,
+      from: args.from,
+      ok: args.result.ok,
+      receipt: args.result.ok ? args.result.receipt : undefined,
+      error: args.result.ok ? undefined : args.result.error,
+    },
+  });
 }
 
 /**
