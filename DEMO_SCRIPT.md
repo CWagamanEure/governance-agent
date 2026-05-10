@@ -33,6 +33,13 @@ The seeded profile, `/decision/verify`, `/vote/submit`, AttestationCard,
 and the rebuilt SignAndVerifyCard all live in commits since the last
 deploy.
 
+Add the fallback-DAO env var to `.env.deploy` (or wherever your
+deployment env is sourced):
+```
+SNAPSHOT_FALLBACK_SPACES_PUBLIC=gitcoindao.eth,gnosis.eth,kleros.eth
+```
+
+Then upgrade:
 ```bash
 SHA=$(git rev-parse HEAD)
 ecloud compute app upgrade 0xc9645B5C0A942e4dE16525513FE36D48DA7D911d \
@@ -40,31 +47,61 @@ ecloud compute app upgrade 0xc9645B5C0A942e4dE16525513FE36D48DA7D911d \
   --repo https://github.com/CWagamanEure/governance-agent --commit "$SHA"
 ```
 
-Then verify the deployed env from a curl:
+Verify the deployed env from a curl:
 ```bash
 curl -sS http://34.90.5.10:8000/env | jq
-# Expect MODEL_PUBLIC, MODEL_ROUTE_PUBLIC, GIT_COMMIT_PUBLIC matching $SHA.
+# Expect MODEL_PUBLIC, MODEL_ROUTE_PUBLIC, GIT_COMMIT_PUBLIC matching $SHA,
+# and SNAPSHOT_FALLBACK_SPACES_PUBLIC listing the three fallback DAOs.
 
 curl -sS http://34.90.5.10:8000/submit-allowlist
-# Expect {"spaces":["arbitrumfoundation.eth"]}.
+# Expect {"spaces":["arbitrumfoundation.eth","gitcoindao.eth","gnosis.eth","kleros.eth"]}.
 ```
 
 ### Active-proposal contingency for ACT 5c
 
-ACT 5c (live Snapshot submit) only fires if Arbitrum has an active
-Snapshot proposal at demo time AND the policy evaluates it as
-FOR/AGAINST/ABSTAIN. Check 30 minutes before:
+ACT 5c (live Snapshot submit) requires (a) an active Snapshot proposal
+in one of the configured spaces AND (b) the policy evaluates it as
+FOR/AGAINST/ABSTAIN, not MANUAL_REVIEW.
+
+The SignAndVerifyCard scans the primary DAO + every fallback space in
+parallel and surfaces all of them grouped in the dropdown. So the
+question is "any active proposal in any of these four DAOs?" — much
+more likely to be yes than waiting on a single DAO.
+
+Check 30 minutes before:
 
 ```bash
 curl -sS https://hub.snapshot.org/graphql -H 'content-type: application/json' \
-  -d '{"query":"{ proposals(first:5,where:{space:\"arbitrumfoundation.eth\",state:\"active\"},orderBy:\"end\",orderDirection:asc){id title end}}"}' | jq
+  -d '{"query":"{ proposals(first:10,where:{space_in:[\"arbitrumfoundation.eth\",\"gitcoindao.eth\",\"gnosis.eth\",\"kleros.eth\"],state:\"active\"},orderBy:\"end\",orderDirection:asc){id title end space{id} type}}"}' | jq
 ```
 
-If empty, narrate ACT 5c as: "today there are no open Arbitrum proposals
-to submit to — the Submit button is disabled with a clear reason. On a
-day when there is one, the wallet would post the signed envelope to
-Snapshot in a single click and you would see the public URL render right
-here." Sign + Verify + the Attestation card still carry the act.
+Three branches for ACT 5c:
+
+**(a) Active Arbitrum proposal exists.** Best case. The narrative stays
+on Arbitrum — "the same DAO whose past 28 proposals we just walked
+through. The TEE wallet just signed a vote on a real, currently-open
+Arbitrum proposal."
+
+**(b) No active Arbitrum, but a fallback DAO has one.** Pivot:
+> "Arbitrum has nothing on the floor today, but here is an active
+> Gitcoin proposal — the system has not seen Gitcoin before, but the
+> policy evaluates it the same way and the same TEE wallet signs the
+> envelope. The submit endpoint accepts any space the operator
+> allowlisted; the deploy env included Gitcoin specifically so this
+> demo path works whenever Arbitrum is quiet."
+
+The pre-flight allowlist line in the card surfaces the four spaces so
+the reviewer can verify the constraint before you click Submit.
+
+**(c) Nothing active anywhere.** Worst case. The Submit button stays
+disabled with a clear reason. Narrate it directly:
+> "All four spaces are quiet right now. The submit step is gated; the
+> button stays off. Sign and verify still complete end-to-end against
+> a closed proposal — the math is the same, only Snapshot's sequencer
+> would reject the late timestamp. Most demo days at least one of the
+> four DAOs has something open."
+
+Worth having a screen recording of (a) ready in either case.
 
 ## The exact data the demo relies on
 
@@ -265,29 +302,41 @@ Each individual hash check shows "match".
 > extraction is hashed at source. Anyone with the blob can do this on
 > commodity hardware."
 
-### 5c. Submit (only on an open Arbitrum proposal)
+### 5c. Submit (when a configured space has an open proposal)
 
-If an active Arbitrum proposal exists at demo time AND it evaluated to
-FOR/AGAINST/ABSTAIN, the **Submit to Snapshot** button is enabled.
-Otherwise it stays disabled with a clear reason ("Policy decided
-MANUAL_REVIEW — no autovote envelope to submit" or "This proposal is
-closed").
+The dropdown is grouped by Snapshot space: **Active on
+arbitrumfoundation.eth** first, then **Active on gitcoindao.eth**,
+**gnosis.eth**, **kleros.eth** as fallbacks. Whichever is open and
+selected, the Submit button enables when (a) the proposal is active,
+(b) verify succeeded, (c) the policy produced an autovote envelope.
 
-If enabled, click **Submit to Snapshot**. A confirm dialog spells out
-the space, proposal, and choice. Confirm.
+The allowlist line below the picker shows the four spaces — submission
+to anything else is hard-rejected by the backend.
+
+Click **Submit to Snapshot**. A confirm dialog spells out the target
+space, proposal, and choice. Confirm.
 
 A green "✓ accepted by Snapshot" stamp appears with a clickable URL
 pointing at the public Snapshot record:
-`https://snapshot.org/#/arbitrumfoundation.eth/proposal/0x...`
+`https://snapshot.org/#/<space>/proposal/0x...`
 
 Click the URL. Snapshot's UI shows the vote — cast by the agent wallet,
 labeled with the gov-agent app metadata.
 
-> "That's a real Snapshot vote, on a real DAO proposal, signed by a
+> "That is a real Snapshot vote, on a real DAO proposal, signed by a
 > wallet that is provably bound to attested code. The vote shows zero
-> voting power because this demo wallet has no ARB — that's the safety
-> property. The signature, the policy hash, the engine version — all
-> public, all replayable."
+> voting power because this demo wallet has no governance tokens on
+> the configured strategy — that is the safety property. The
+> signature, the policy hash, the engine version — all public, all
+> replayable."
+
+If the active proposal is from a fallback DAO (Gitcoin / Gnosis /
+Kleros) instead of Arbitrum, briefly acknowledge:
+> "We have not seen this DAO before — no calibration, no cached
+> proposals. The policy still evaluates it the same way, the TEE
+> wallet still signs the envelope, the allowlist gate still applies.
+> The demo only works on the four DAOs the operator pre-allowlisted;
+> there is no path for arbitrary write access."
 
 ### 5d. Attestation
 
