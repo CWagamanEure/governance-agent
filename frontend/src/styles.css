@@ -1242,6 +1242,29 @@ input[type="range"] {
 .sign-verify-card {
   padding: 22px 22px 20px;
 }
+.sv-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.submit-btn {
+  /* Distinct hue from the primary "Sign" button so the submit step is
+     visually third in the chain, not just another action. Disabled state
+     keeps the muted look so reviewers see it is gated, not broken. */
+  background: linear-gradient(135deg, #6cd07a 0%, #3ea35d 100%);
+  color: #0a1f0e;
+  border: none;
+  font-weight: 600;
+}
+.submit-btn:disabled {
+  background: var(--bg-elev-2);
+  color: var(--fg-soft);
+  border: 1px solid var(--border);
+  cursor: not-allowed;
+}
+.submit-btn:not(:disabled):hover {
+  filter: brightness(1.05);
+}
 .sign-verify-head {
   display: flex;
   justify-content: space-between;

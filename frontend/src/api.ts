@@ -442,6 +442,48 @@ export async function verifyDecisionBlob(args: {
 }
 
 // ---------------------------------------------------------------------------
+// Snapshot vote submission — post a previously-signed envelope live
+// ---------------------------------------------------------------------------
+
+export type VoteSubmitResult = {
+  ok: boolean;
+  status?: number;
+  error?: string;
+  receipt?: any;
+  space: string;
+  proposal_id: string;
+  snapshot_url: string;
+};
+
+export async function submitVoteEnvelope(args: {
+  token: string;
+  envelope: any;
+}): Promise<VoteSubmitResult> {
+  const r = await fetch(`${BACKEND_URL}/vote/submit`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${args.token}`,
+    },
+    body: JSON.stringify({ envelope: args.envelope }),
+  });
+  // Backend returns the SubmitResult shape (ok=false carries a status field)
+  // wrapped in 200 even when Snapshot rejected — except for our own 400/401/403
+  // gates where the envelope was malformed or the space wasn't allowed.
+  const text = await r.text();
+  let body: any;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new Error(`vote submit failed: ${r.status} ${text}`);
+  }
+  if (!r.ok) {
+    throw new Error(body?.message ?? body?.error ?? `vote submit failed: ${r.status}`);
+  }
+  return body;
+}
+
+// ---------------------------------------------------------------------------
 // Snapshot — fetch a single proposal by id
 // ---------------------------------------------------------------------------
 

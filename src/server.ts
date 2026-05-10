@@ -31,6 +31,7 @@ import {
   submitVote,
   decisionToChoice,
   APP_NAME as SNAPSHOT_APP_NAME,
+  type SignedVoteEnvelope,
 } from './snapshot.js';
 import type { Decision } from './policy.js';
 import { runPipeline, type SnapshotProposalRaw } from './pipeline.js';
@@ -940,6 +941,113 @@ app.get('/debug/jwt', async (c) => {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });
+
+/**
+ * POST /vote/submit
+ *
+ * Submit a previously-signed Snapshot vote envelope to Snapshot's sequencer.
+ * Decoupled from sign so the demo can pause between Sign → Verify → Submit
+ * with the operator narrating each step.
+ *
+ * Safety guards:
+ *   - SUBMIT_ALLOWLIST env var (comma-separated space ids). When set,
+ *     submission is rejected for any space not on the list. Defaults to
+ *     allowing the configured DAO_SPACE_PUBLIC space only.
+ *   - Caller must be authenticated (the audit trail records who submitted).
+ *   - The signature is re-verified locally before posting.
+ *
+ * Body: { envelope: SignedVoteEnvelope }
+ */
+app.post('/vote/submit', async (c) => {
+  let address: string;
+  try {
+    address = requireAuth(c);
+  } catch {
+    return c.json({ error: 'authentication required' }, 401);
+  }
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid JSON body' }, 400);
+  }
+
+  const envelope = body?.envelope as SignedVoteEnvelope | undefined;
+  if (!envelope || !envelope.address || !envelope.sig || !envelope.data?.message) {
+    return c.json({ error: 'body must include a signed vote envelope' }, 400);
+  }
+
+  const targetSpace = envelope.data.message.space;
+  if (!isSpaceAllowedForSubmit(targetSpace)) {
+    return c.json(
+      {
+        error: 'space_not_allowed',
+        message: `Refusing to submit to ${targetSpace}. Set SUBMIT_ALLOWLIST to allow it.`,
+        allowlist: getSubmitAllowlist(),
+      },
+      403,
+    );
+  }
+
+  // The transport JSON-encodes bigints as numbers; coerce timestamp back so
+  // local re-verification uses the same shape that was signed.
+  const restoredEnvelope: SignedVoteEnvelope = {
+    ...envelope,
+    data: {
+      ...envelope.data,
+      message: {
+        ...envelope.data.message,
+        timestamp: BigInt(envelope.data.message.timestamp as unknown as string | number | bigint),
+      },
+    },
+  };
+
+  const recovered = await verifyEnvelope(restoredEnvelope);
+  if (!recovered) {
+    return c.json(
+      { error: 'envelope signature does not recover to its declared address' },
+      400,
+    );
+  }
+
+  const result = await submitVote(restoredEnvelope);
+  appendAudit({
+    event_type: 'VOTE_SUBMITTED',
+    user_id: findOrCreateUser(address).id,
+    payload: {
+      space: targetSpace,
+      proposal: envelope.data.message.proposal,
+      choice: envelope.data.message.choice,
+      from: envelope.address,
+      ok: result.ok,
+      receipt: result.ok ? result.receipt : undefined,
+      error: result.ok ? undefined : result.error,
+    },
+  });
+
+  // Return both the raw result and a Snapshot UI link so the frontend can
+  // open it directly. The UI URL pattern is `https://snapshot.org/#/{space}/proposal/{id}`.
+  const snapshotUrl = `https://snapshot.org/#/${targetSpace}/proposal/${envelope.data.message.proposal}`;
+  return c.json({
+    ...result,
+    space: targetSpace,
+    proposal_id: envelope.data.message.proposal,
+    snapshot_url: snapshotUrl,
+  });
+});
+
+function getSubmitAllowlist(): string[] {
+  const raw = process.env.SUBMIT_ALLOWLIST;
+  if (raw) return raw.split(',').map((s) => s.trim()).filter(Boolean);
+  // Default: only the configured DAO space the demo is wired against.
+  const dao = process.env.DAO_SPACE_PUBLIC;
+  return dao ? [dao] : [];
+}
+
+function isSpaceAllowedForSubmit(space: string): boolean {
+  return getSubmitAllowlist().includes(space);
+}
 
 /**
  * POST /decision/verify

@@ -95,7 +95,11 @@ export function Policy({
       />
       {token && profile.profile && (
         <div style={{ marginTop: 16 }}>
-          <SignAndVerifyCard token={token} profile={profile.profile} />
+          <SignAndVerifyCard
+            token={token}
+            profile={profile.profile}
+            daoSpace={publicEnv?.DAO_SPACE_PUBLIC ?? null}
+          />
         </div>
       )}
       <div style={{ marginTop: 16 }}>
