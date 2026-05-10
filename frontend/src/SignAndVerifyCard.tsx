@@ -16,7 +16,7 @@
  * work; Submit is disabled with a clear reason.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchActiveProposals,
   fetchSnapshotProposal,
@@ -84,6 +84,11 @@ export function SignAndVerifyCard({
   const [submission, setSubmission] = useState<VoteSubmitResult | null>(null);
   const [allowlist, setAllowlist] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // Run id bumped on every reset() (and dropdown change). In-flight handlers
+  // capture the id at start and check it before applying state, so a Reset
+  // mid-sign / mid-verify / mid-submit cannot be clobbered when the prior
+  // request finally resolves.
+  const runIdRef = useRef(0);
 
   useEffect(() => {
     fetchSubmitAllowlist().then(setAllowlist).catch(() => setAllowlist([]));
@@ -160,6 +165,7 @@ export function SignAndVerifyCard({
   );
 
   function reset() {
+    runIdRef.current += 1;
     setSigned(null);
     setVerifyResult(null);
     setSubmission(null);
@@ -171,6 +177,7 @@ export function SignAndVerifyCard({
     if (!selected) return;
     reset();
     setStep('signing');
+    const myRun = runIdRef.current;
     try {
       // Cached proposals carry the raw Snapshot record alongside; live-active
       // ones only have id/title — fetch the full proposal first so the
@@ -188,6 +195,7 @@ export function SignAndVerifyCard({
         proposal: proposalRaw,
         sign: true,
       });
+      if (runIdRef.current !== myRun) return; // reset called mid-flight
       if (!result.decision_blob) {
         throw new Error(result.decision_blob_error ?? 'no decision_blob in pipeline response');
       }
@@ -201,6 +209,7 @@ export function SignAndVerifyCard({
       });
       setStep('signed');
     } catch (e: any) {
+      if (runIdRef.current !== myRun) return;
       setError(e?.message ?? String(e));
       setStep('error');
     }
@@ -209,16 +218,19 @@ export function SignAndVerifyCard({
   async function handleVerify() {
     if (!signed) return;
     setStep('verifying');
+    const myRun = runIdRef.current;
     try {
       const r = await verifyDecisionBlob({
         blob: signed.blob,
         policy: profile.profile_json,
         analysis: signed.analysis,
       });
+      if (runIdRef.current !== myRun) return;
       setVerifyResult(r);
       setStep(r.ok ? 'verified' : 'error');
       if (!r.ok) setError('Verification mismatch — see check details below.');
     } catch (e: any) {
+      if (runIdRef.current !== myRun) return;
       setError(e?.message ?? String(e));
       setStep('error');
     }
@@ -226,6 +238,19 @@ export function SignAndVerifyCard({
 
   async function handleSubmit() {
     if (!signed?.vote) return;
+    // Stale-proposal guard: the active-proposal list was fetched on mount.
+    // If the page sat open long enough for the proposal to close, Snapshot
+    // would reject with a cryptic timestamp error — surface a clean reason
+    // first instead of bouncing off the sequencer.
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (selected?.endTs && selected.endTs < nowSec) {
+      const closedAt = new Date(selected.endTs * 1000).toLocaleString();
+      setError(
+        `This proposal closed at ${closedAt}. Refresh and pick another active proposal to submit.`,
+      );
+      setStep('error');
+      return;
+    }
     const targetSpace = signed.vote.envelope?.data?.message?.space ?? daoSpace ?? '(unknown)';
     const ok = window.confirm(
       `Submit a real vote to Snapshot mainnet?\n\n` +
@@ -238,13 +263,30 @@ export function SignAndVerifyCard({
     );
     if (!ok) return;
     setStep('submitting');
+    const myRun = runIdRef.current;
     try {
       const r = await submitVoteEnvelope({ token, envelope: signed.vote.envelope });
+      if (runIdRef.current !== myRun) return;
+      // Single source of truth for the outcome: the SubmissionSummary card.
+      // Don't also setError when ok=false; the summary already renders the
+      // error inline so a duplicate banner up top would be redundant.
       setSubmission(r);
       setStep(r.ok ? 'submitted' : 'error');
-      if (!r.ok) setError(r.error ?? 'Snapshot rejected the vote');
     } catch (e: any) {
-      setError(e?.message ?? String(e));
+      if (runIdRef.current !== myRun) return;
+      // Backend gates (auth/allowlist/malformed envelope) throw via api.ts.
+      // Synthesize a SubmissionSummary-shaped object so the failure renders
+      // in the same UI surface as a Snapshot-side rejection — instead of
+      // a separate top-of-card error banner.
+      const message = e?.message ?? String(e);
+      setSubmission({
+        ok: false,
+        status: 0,
+        error: message,
+        space: signed.vote.envelope?.data?.message?.space ?? '',
+        proposal_id: signed.vote.envelope?.data?.message?.proposal ?? '',
+        snapshot_url: '',
+      });
       setStep('error');
     }
   }
@@ -479,18 +521,26 @@ function VerifySummary({ result }: { result: DecisionVerifyResult }) {
 }
 
 function SubmissionSummary({ result }: { result: VoteSubmitResult }) {
+  // status === 0 is the synthesized "backend rejected before sequencer was
+  // hit" shape (auth, allowlist, malformed envelope); >= 400 means Snapshot
+  // returned an HTTP error. Phrase the message accordingly so the operator
+  // can distinguish on stage.
+  const isBackendRejection = !result.ok && (result.status ?? 0) === 0;
   return (
     <div className="sv-section" style={{ marginTop: 14 }}>
       <div className="dft-label">Snapshot submission</div>
       <div className={`sv-stamp ${result.ok ? 'sv-stamp-ok' : 'sv-stamp-bad'}`} role="status">
-        {result.ok ? '✓ accepted by Snapshot' : '✗ rejected'}
-        {!result.ok && (
+        {result.ok ? '✓ accepted by Snapshot' : isBackendRejection ? '✗ blocked by backend' : '✗ rejected by Snapshot'}
+        {!result.ok && !isBackendRejection && (
           <span className="muted tiny" style={{ marginLeft: 8 }}>
             HTTP {result.status ?? '—'}
           </span>
         )}
       </div>
-      <p className="muted tiny" style={{ marginTop: 8, wordBreak: 'break-all' }}>
+      <p
+        className="muted tiny"
+        style={{ marginTop: 8, wordBreak: 'break-all', maxHeight: 160, overflowY: 'auto' }}
+      >
         {result.ok ? (
           <>
             Public record:{' '}
@@ -499,7 +549,7 @@ function SubmissionSummary({ result }: { result: VoteSubmitResult }) {
             </a>
           </>
         ) : (
-          <>Snapshot returned: {result.error}</>
+          <>{result.error ?? 'Submission failed'}</>
         )}
       </p>
     </div>
