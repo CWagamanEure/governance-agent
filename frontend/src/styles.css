@@ -674,7 +674,11 @@ input[type="range"] {
 }
 
 .dash-main {
-  max-width: 1100px;
+  /* Sized for a 1280×720 projector: 1240px content area, with a 24px gutter,
+     leaves room for the editor-grid form column at >= 700px so the rule-row
+     conditions stay on one line. Also matches the topbar-inner max-width
+     so the trust-ribbon and content edges line up on wide screens. */
+  max-width: 1240px;
   width: 100%;
   margin: 0 auto;
   padding: 36px 24px 64px;
@@ -691,7 +695,8 @@ input[type="range"] {
   backdrop-filter: blur(8px);
 }
 .topbar-inner {
-  max-width: 1300px;
+  /* Match .dash-main so the brand/nav line up with content edges. */
+  max-width: 1240px;
   margin: 0 auto;
   padding: 0 24px;
   height: 56px;
@@ -949,7 +954,8 @@ input[type="range"] {
   padding: 24px;
 }
 .tee-proof-inner {
-  max-width: 1100px;
+  /* Match .dash-main / .topbar-inner so the footer aligns with content. */
+  max-width: 1240px;
   margin: 0 auto;
   display: grid;
   grid-template-columns: auto 1fr auto;
@@ -1725,12 +1731,17 @@ input[type="range"] {
 
 .editor-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  /* 400px diff panel (was 360) gives the binding-rule label more breathing
+     room so 30+ char rule ids like manual_review_single_recipient_treasury
+     stay on one line in the diff item. */
+  grid-template-columns: minmax(0, 1fr) 400px;
   gap: 18px;
   align-items: start;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 980px) {
+  /* Below this, the form column would shrink under ~520px and the rule-row
+     conditions wrap awkwardly. Switch to single column instead. */
   .editor-grid { grid-template-columns: 1fr; }
 }
 
