@@ -63,20 +63,53 @@ export function App() {
 // ---------------------------------------------------------------------------
 
 type BackendInfo = {
-  wallet: WalletInfo;
-  env: Record<string, string>;
-  attestation: AttestationStub;
+  wallet: WalletInfo | null;
+  env: Record<string, string> | null;
+  attestation: AttestationStub | null;
+};
+
+type BackendErrors = {
+  wallet?: string;
+  env?: string;
+  attestation?: string;
 };
 
 function useBackendInfo() {
   const [info, setInfo] = useState<BackendInfo | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<BackendErrors>({});
+  const [version, setVersion] = useState(0);
+  // Each backend probe is independent — attestation is the most likely to
+  // fail (TEE bring-up issues), and we don't want one failure to blank the
+  // wallet + env panels too. Promise.allSettled lets each piece settle
+  // independently; consumers handle nulls.
   useEffect(() => {
-    Promise.all([getWallet(), getPublicEnv(), getAttestation()])
-      .then(([wallet, env, attestation]) => setInfo({ wallet, env, attestation }))
-      .catch((e) => setError(String(e)));
-  }, []);
-  return { info, error };
+    let cancelled = false;
+    Promise.allSettled([getWallet(), getPublicEnv(), getAttestation()]).then(
+      ([walletR, envR, attR]) => {
+        if (cancelled) return;
+        const nextErrors: BackendErrors = {};
+        if (walletR.status === 'rejected') nextErrors.wallet = String(walletR.reason);
+        if (envR.status === 'rejected') nextErrors.env = String(envR.reason);
+        if (attR.status === 'rejected') nextErrors.attestation = String(attR.reason);
+        setErrors(nextErrors);
+        setInfo({
+          wallet: walletR.status === 'fulfilled' ? walletR.value : null,
+          env: envR.status === 'fulfilled' ? envR.value : null,
+          attestation: attR.status === 'fulfilled' ? attR.value : null,
+        });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [version]);
+
+  // Backward compatible single-string error: only set when EVERY probe failed
+  // (true reachability problem). Partial failures surface via `errors`.
+  const allFailed = !!errors.wallet && !!errors.env && !!errors.attestation;
+  const error = allFailed ? `Cannot reach backend at ${BACKEND_URL}` : null;
+
+  return { info, error, errors, retry: () => setVersion((v) => v + 1) };
 }
 
 // ---------------------------------------------------------------------------
@@ -89,7 +122,7 @@ function Dashboard({ tab }: { tab: Tab }) {
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [demoProgress, setDemoProgress] = useState(() => readDemoProgress());
   const [demoResetVersion, setDemoResetVersion] = useState(0);
-  const { info, error } = useBackendInfo();
+  const { info, error, errors, retry } = useBackendInfo();
 
   useEffect(() => {
     (async () => {
@@ -185,7 +218,7 @@ function Dashboard({ tab }: { tab: Tab }) {
         info={info}
         currentTab={tab}
       />
-      <TrustRibbon info={info} error={error} />
+      <TrustRibbon info={info} error={error} errors={errors} onRetry={retry} />
 
       <main className="dash-main">
         <DemoGuide
@@ -401,7 +434,7 @@ function TopBar({
           <a href="#/" className="brand-link">
             Governance Agent
           </a>
-          {info?.env.DAO_SPACE_PUBLIC && (
+          {info?.env?.DAO_SPACE_PUBLIC && (
             <DaoPicker selected={info.env.DAO_SPACE_PUBLIC} />
           )}
         </div>
@@ -430,11 +463,24 @@ function TopBar({
 // Trust ribbon
 // ---------------------------------------------------------------------------
 
-function TrustRibbon({ info, error }: { info: BackendInfo | null; error: string | null }) {
+function TrustRibbon({
+  info,
+  error,
+  errors,
+  onRetry,
+}: {
+  info: BackendInfo | null;
+  error: string | null;
+  errors: BackendErrors;
+  onRetry: () => void;
+}) {
   if (error) {
     return (
       <div className="trust-ribbon trust-ribbon-error">
         <span>⚠ Cannot reach backend at {BACKEND_URL}</span>
+        <button className="link-btn" onClick={onRetry} style={{ marginLeft: 'auto' }}>
+          retry
+        </button>
       </div>
     );
   }
@@ -446,8 +492,26 @@ function TrustRibbon({ info, error }: { info: BackendInfo | null; error: string 
     );
   }
 
-  const machine = info.env.EIGEN_MACHINE_TYPE_PUBLIC;
+  const env = info.env ?? {};
+  const wallet = info.wallet;
+  const machine = env.EIGEN_MACHINE_TYPE_PUBLIC;
   const isLocal = !machine;
+  const partial = errors.wallet || errors.env || errors.attestation;
+  const partialBadge = partial ? (
+    <span className="muted tiny" style={{ marginLeft: 8 }}>
+      {[
+        errors.wallet && 'wallet',
+        errors.env && 'env',
+        errors.attestation && 'attestation',
+      ]
+        .filter(Boolean)
+        .join(' · ')}{' '}
+      unavailable ·{' '}
+      <button className="link-btn" onClick={onRetry}>
+        retry
+      </button>
+    </span>
+  ) : null;
 
   if (isLocal) {
     return (
@@ -457,20 +521,22 @@ function TrustRibbon({ info, error }: { info: BackendInfo | null; error: string 
           <strong>Local dev backend</strong> · not running in a TEE · attestation disabled
         </span>
         <span className="muted" style={{ marginLeft: 'auto' }}>
-          agent wallet <code>{shortAddr(info.wallet.address)}</code>
+          agent wallet <code>{wallet ? shortAddr(wallet.address) : '—'}</code>
         </span>
+        {partialBadge}
       </div>
     );
   }
 
-  const verifyUrl = eigenVerifyUrl(info.env);
+  const verifyUrl = eigenVerifyUrl(env);
   return (
     <div className="trust-ribbon">
       <span className="t-dot" />
       <span>
         Attested in <strong>EigenCompute TEE</strong> · agent wallet{' '}
-        <code>{shortAddr(info.wallet.address)}</code>
+        <code>{wallet ? shortAddr(wallet.address) : '—'}</code>
       </span>
+      {partialBadge}
       <a
         href={verifyUrl}
         target="_blank"
@@ -512,7 +578,7 @@ function TEEProofPanel({ info, error }: { info: BackendInfo | null; error: strin
 
         <div className="tee-proof-grid">
           <ProofItem label="App ID" value={shortAddr(appId)} title={appId} />
-          <ProofItem label="Wallet" value={info?.wallet.address ? shortAddr(info.wallet.address) : 'loading'} title={info?.wallet.address} />
+          <ProofItem label="Wallet" value={info?.wallet?.address ? shortAddr(info.wallet.address) : 'loading'} title={info?.wallet?.address} />
           <ProofItem label="Machine" value={machine ?? 'not attested'} />
           <ProofItem label="Commit" value={env.GIT_COMMIT_PUBLIC ? env.GIT_COMMIT_PUBLIC.slice(0, 10) : 'unknown'} title={env.GIT_COMMIT_PUBLIC} />
           <ProofItem label="Model route" value={modelRoute(env, isTee)} />
