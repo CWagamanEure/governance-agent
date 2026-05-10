@@ -83,6 +83,11 @@ export function SignAndVerifyCard({
   const [verifyResult, setVerifyResult] = useState<DecisionVerifyResult | null>(null);
   const [submission, setSubmission] = useState<VoteSubmitResult | null>(null);
   const [allowlist, setAllowlist] = useState<string[]>([]);
+  // Distinguish "endpoint failed to load" from "allowlist is empty". The
+  // operator narrates the allowlist line during ACT 5; if /submit-allowlist
+  // is unreachable, hiding the line silently desyncs the script. Show
+  // "(allowlist unavailable)" instead.
+  const [allowlistLoaded, setAllowlistLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Run id bumped on every reset() (and dropdown change). In-flight handlers
   // capture the id at start and check it before applying state, so a Reset
@@ -91,7 +96,15 @@ export function SignAndVerifyCard({
   const runIdRef = useRef(0);
 
   useEffect(() => {
-    fetchSubmitAllowlist().then(setAllowlist).catch(() => setAllowlist([]));
+    fetchSubmitAllowlist()
+      .then((spaces) => {
+        setAllowlist(spaces);
+        setAllowlistLoaded(true);
+      })
+      .catch(() => {
+        setAllowlist([]);
+        setAllowlistLoaded(false);
+      });
   }, []);
 
   // Load both data sources in parallel. Live-fetched active proposals are
@@ -371,14 +384,21 @@ export function SignAndVerifyCard({
         </p>
       )}
 
-      {allowlist.length > 0 && (
-        <p className="muted tiny submit-allowlist" style={{ marginTop: 8 }}>
-          Submit allowlist: {allowlist.map((s) => <code key={s}>{s}</code>).reduce(
-            (acc: React.ReactNode[], el, i) => (i === 0 ? [el] : [...acc, ' · ', el]),
-            [] as React.ReactNode[],
-          )}
-        </p>
-      )}
+      <p className="muted tiny submit-allowlist" style={{ marginTop: 8 }}>
+        Submit allowlist:{' '}
+        {!allowlistLoaded ? (
+          <em>(unavailable — backend /submit-allowlist did not respond)</em>
+        ) : allowlist.length === 0 ? (
+          <em>(empty — set SUBMIT_ALLOWLIST or DAO_SPACE_PUBLIC)</em>
+        ) : (
+          allowlist
+            .map((s) => <code key={s}>{s}</code>)
+            .reduce(
+              (acc: React.ReactNode[], el, i) => (i === 0 ? [el] : [...acc, ' · ', el]),
+              [] as React.ReactNode[],
+            )
+        )}
+      </p>
 
       <div className="sv-buttons" style={{ marginTop: 14 }}>
         <button
@@ -397,7 +417,13 @@ export function SignAndVerifyCard({
             !signed ||
             step === 'verifying' ||
             (verifyResult?.ok ?? false) ||
-            step === 'submitting'
+            step === 'submitting' ||
+            // After Submit succeeds, re-clicking Verify replays the engine
+            // and would leave the stale "✓ accepted by Snapshot" stamp
+            // visible alongside a fresh verify result. Lock the chain at
+            // its terminal state.
+            step === 'submitted' ||
+            (submission?.ok ?? false)
           }
           title={!signed ? 'Sign first' : 'Independently re-run the engine'}
         >
