@@ -340,6 +340,20 @@ app.post('/vote/sign', async (c) => {
   const reason = typeof body?.reason === 'string' ? body.reason : '';
   const shouldSubmit = body?.submit === true;
 
+  // Allowlist check before signing — saves the wallet roundtrip if the space
+  // would be rejected at submit time anyway. Sign-only without submit is fine
+  // against any space (no public side effect).
+  if (shouldSubmit && !isSpaceAllowedForSubmit(space)) {
+    return c.json(
+      {
+        error: 'space_not_allowed',
+        message: `Refusing to submit to ${space}. Set SUBMIT_ALLOWLIST to allow it.`,
+        allowlist: getSubmitAllowlist(),
+      },
+      403,
+    );
+  }
+
   let acct;
   try {
     acct = walletAccount();
@@ -434,6 +448,22 @@ app.post('/pipeline/run', async (c) => {
   const overrideChoice =
     rawOverride === 1 || rawOverride === 2 || rawOverride === 3 ? rawOverride : null;
   const submitToSnapshot = body?.submit === true;
+
+  // Allowlist gate for the integrated pipeline submit path. The proposal's
+  // space comes from the supplied Snapshot proposal record.
+  if (submitToSnapshot) {
+    const targetSpace = proposal.space?.id ?? '';
+    if (!isSpaceAllowedForSubmit(targetSpace)) {
+      return c.json(
+        {
+          error: 'space_not_allowed',
+          message: `Refusing to submit to ${targetSpace}. Set SUBMIT_ALLOWLIST to allow it.`,
+          allowlist: getSubmitAllowlist(),
+        },
+        403,
+      );
+    }
+  }
 
   // If authenticated:
   //   - sign with the user's deterministically-derived per-user wallet
@@ -1048,6 +1078,17 @@ function getSubmitAllowlist(): string[] {
 function isSpaceAllowedForSubmit(space: string): boolean {
   return getSubmitAllowlist().includes(space);
 }
+
+/**
+ * GET /submit-allowlist
+ *
+ * Public read of the spaces the backend will accept submit requests for.
+ * Lets the frontend render the allowlist near the Submit button so the
+ * operator can confirm the target before casting a real Snapshot vote.
+ */
+app.get('/submit-allowlist', (c) => {
+  return c.json({ spaces: getSubmitAllowlist() });
+});
 
 /**
  * POST /decision/verify

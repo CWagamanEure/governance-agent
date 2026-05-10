@@ -20,6 +20,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   fetchActiveProposals,
   fetchSnapshotProposal,
+  fetchSubmitAllowlist,
   getCachedProposals,
   runPipeline,
   submitVoteEnvelope,
@@ -72,7 +73,12 @@ export function SignAndVerifyCard({
   const [signed, setSigned] = useState<SignedState | null>(null);
   const [verifyResult, setVerifyResult] = useState<DecisionVerifyResult | null>(null);
   const [submission, setSubmission] = useState<VoteSubmitResult | null>(null);
+  const [allowlist, setAllowlist] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchSubmitAllowlist().then(setAllowlist).catch(() => setAllowlist([]));
+  }, []);
 
   // Load both data sources in parallel. Live-fetched active proposals are
   // preferred for the demo because they're the only ones Snapshot will accept
@@ -188,8 +194,15 @@ export function SignAndVerifyCard({
 
   async function handleSubmit() {
     if (!signed?.vote) return;
+    const targetSpace = signed.vote.envelope?.data?.message?.space ?? daoSpace ?? '(unknown)';
     const ok = window.confirm(
-      `Submit a real vote to Snapshot mainnet?\n\nSpace: ${selected?.id ? daoSpace : '(unknown)'}\nProposal: ${selected?.title}\nChoice: ${choiceLabel(signed.vote.choice)}\n\nThis is a public, permanent record signed by the TEE wallet. The vote will count against the wallet's voting power on this Snapshot strategy.`,
+      `Submit a real vote to Snapshot mainnet?\n\n` +
+        `Space: ${targetSpace}\n` +
+        `Proposal: ${selected?.title}\n` +
+        `Choice: ${choiceLabel(signed.vote.choice)}\n\n` +
+        `This is a public, permanent record signed by the TEE wallet. The vote ` +
+        `will count according to whatever voting power the wallet has on this ` +
+        `Snapshot strategy (typically zero for the demo wallet).`,
     );
     if (!ok) return;
     setStep('submitting');
@@ -278,6 +291,15 @@ export function SignAndVerifyCard({
       {activeOptions.length === 0 && daoSpace && (
         <p className="muted tiny" style={{ marginTop: 4 }}>
           No active Snapshot proposals on <code>{daoSpace}</code>; submit will be disabled.
+        </p>
+      )}
+
+      {allowlist.length > 0 && (
+        <p className="muted tiny submit-allowlist" style={{ marginTop: 8 }}>
+          Submit allowlist: {allowlist.map((s) => <code key={s}>{s}</code>).reduce(
+            (acc: React.ReactNode[], el, i) => (i === 0 ? [el] : [...acc, ' · ', el]),
+            [] as React.ReactNode[],
+          )}
         </p>
       )}
 

@@ -455,6 +455,13 @@ export type VoteSubmitResult = {
   snapshot_url: string;
 };
 
+export async function fetchSubmitAllowlist(): Promise<string[]> {
+  const r = await fetch(`${BACKEND_URL}/submit-allowlist`);
+  if (!r.ok) return [];
+  const j = (await r.json()) as { spaces?: string[] };
+  return j.spaces ?? [];
+}
+
 export async function submitVoteEnvelope(args: {
   token: string;
   envelope: any;
