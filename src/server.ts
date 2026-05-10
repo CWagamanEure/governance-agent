@@ -1128,9 +1128,18 @@ app.post('/vote/submit', async (c) => {
   });
 });
 
+// Snapshot space ids are case-insensitive in the UI and Snapshot's GraphQL
+// always returns them lowercase, so we normalize everywhere we touch them.
+// Without this, an operator typo like SUBMIT_ALLOWLIST=ArbitrumFoundation.eth
+// would silently reject every submit even though the displayed allowlist
+// looks correct.
+function normalizeSpace(s: string): string {
+  return s.trim().toLowerCase();
+}
+
 function parseSpaceList(raw: string | undefined): string[] {
   if (!raw) return [];
-  return raw.split(',').map((s) => s.trim()).filter(Boolean);
+  return raw.split(',').map(normalizeSpace).filter(Boolean);
 }
 
 function getSubmitAllowlist(): string[] {
@@ -1140,7 +1149,9 @@ function getSubmitAllowlist(): string[] {
   //   - SNAPSHOT_FALLBACK_SPACES_PUBLIC: spaces shown in the SignAndVerifyCard
   //     active-proposal picker as fallback targets when the primary has none
   const explicit = parseSpaceList(process.env.SUBMIT_ALLOWLIST);
-  const primary = process.env.DAO_SPACE_PUBLIC ? [process.env.DAO_SPACE_PUBLIC] : [];
+  const primary = process.env.DAO_SPACE_PUBLIC
+    ? [normalizeSpace(process.env.DAO_SPACE_PUBLIC)]
+    : [];
   const fallback = parseSpaceList(process.env.SNAPSHOT_FALLBACK_SPACES_PUBLIC);
   // Dedupe preserving primary-first ordering for nicer display.
   const seen = new Set<string>();
@@ -1155,7 +1166,7 @@ function getSubmitAllowlist(): string[] {
 }
 
 function isSpaceAllowedForSubmit(space: string): boolean {
-  return getSubmitAllowlist().includes(space);
+  return getSubmitAllowlist().includes(normalizeSpace(space));
 }
 
 /**
