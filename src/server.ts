@@ -1279,6 +1279,33 @@ app.post('/decision/verify', async (c) => {
     signatureError = e instanceof Error ? e.message : String(e);
   }
 
+  // 4. Confirm the recovered signer is actually one of the agent wallets
+  //    bound to this TEE. Without this check, anyone could fabricate a self-
+  //    consistent blob signed by an arbitrary key and the verifier would
+  //    return ok=true — turning the load-bearing claim of ACT 5 ("the TEE
+  //    wallet signed this") into "you supplied self-consistent inputs".
+  //
+  //    Acceptable signers: the app-default wallet (legacy curl-demo path)
+  //    and, when the caller is authed, that user's per-user wallet (the demo
+  //    flow). Both are derived deterministically from the TEE-injected
+  //    MNEMONIC, so any address outside this set was not produced by the
+  //    enclave.
+  const validAgents = new Set<string>();
+  try {
+    validAgents.add(walletAccount().address.toLowerCase());
+  } catch {
+    // No MNEMONIC: leave the set empty, every blob will fail the agent check.
+  }
+  const verifyAuthedAddr = getAuthedAddress(c);
+  if (verifyAuthedAddr) {
+    try {
+      validAgents.add(userWallet(verifyAuthedAddr as `0x${string}`).address.toLowerCase());
+    } catch {
+      // user wallet derivation failed: skip; default-wallet check still applies
+    }
+  }
+  const agentAddressOk = validAgents.has(blob.signature.address.toLowerCase());
+
   const elapsedMs = Number(process.hrtime.bigint() - startNs) / 1_000_000;
   const ok =
     policyMatches &&
@@ -1286,7 +1313,8 @@ app.post('/decision/verify', async (c) => {
     analysisMatches &&
     evaluationMatches &&
     decisionMatches &&
-    signatureRecovered;
+    signatureRecovered &&
+    agentAddressOk;
 
   return c.json({
     ok,
@@ -1301,6 +1329,7 @@ app.post('/decision/verify', async (c) => {
       evaluation_hash: evaluationMatches,
       decision: decisionMatches,
       signature: signatureRecovered,
+      agent_address: agentAddressOk,
     },
     hashes: {
       policy: { signed: blob.payload.hashes.policy, replayed: policyHash },
@@ -1308,6 +1337,8 @@ app.post('/decision/verify', async (c) => {
       analysis: { signed: blob.payload.hashes.analysis, replayed: analysisHash },
       evaluation: { signed: blob.payload.hashes.evaluation, replayed: evaluationHash },
     },
+    signed_agent_address: blob.signature.address,
+    accepted_agent_addresses: [...validAgents],
     signature_error: signatureError,
   });
 });

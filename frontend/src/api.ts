@@ -417,6 +417,10 @@ export type DecisionVerifyResult = {
     evaluation_hash: boolean;
     decision: boolean;
     signature: boolean;
+    // Confirms the blob was signed by an agent wallet derived from the TEE-
+    // injected MNEMONIC, not an arbitrary key. Without this, a self-
+    // consistent forged blob would verify ok.
+    agent_address: boolean;
   };
   hashes: {
     policy: { signed: string; replayed: string };
@@ -424,6 +428,8 @@ export type DecisionVerifyResult = {
     analysis: { signed: string; replayed: string };
     evaluation: { signed: string; replayed: string };
   };
+  signed_agent_address?: string;
+  accepted_agent_addresses?: string[];
   signature_error?: string;
 };
 
