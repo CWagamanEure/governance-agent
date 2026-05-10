@@ -49,6 +49,41 @@ type Flag = typeof FLAGS[number];
 
 type Profile = any; // schema-validated server-side
 
+function draftStorageKey(profileId: string): string {
+  return `gov-agent:editor-draft:${profileId}`;
+}
+
+function readPersistedDraft(profileId: string, baseline: unknown): Profile | null {
+  try {
+    const raw = localStorage.getItem(draftStorageKey(profileId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    // Only treat as restorable if it differs from the saved baseline; otherwise
+    // it's not a meaningful draft and we don't need the "restored edits" UI.
+    if (deepEqual(parsed, baseline)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writePersistedDraft(profileId: string, draft: Profile) {
+  try {
+    localStorage.setItem(draftStorageKey(profileId), JSON.stringify(draft));
+  } catch {
+    // Storage may be full / blocked. Persistence is a nice-to-have; the
+    // editor still works without it.
+  }
+}
+
+function clearPersistedDraft(profileId: string) {
+  try {
+    localStorage.removeItem(draftStorageKey(profileId));
+  } catch {
+    // ignore
+  }
+}
+
 export function PolicyEditor({
   token,
   baseProfile,
@@ -60,7 +95,16 @@ export function PolicyEditor({
   onSaved: () => void;
   onCancel: () => void;
 }) {
-  const [draft, setDraft] = useState<Profile>(() => deepClone(baseProfile.profile_json));
+  // If the previous session left a draft in localStorage, restore it so a
+  // mid-demo refresh (or accidental nav-away) doesn't wipe the four ACT-2
+  // unchecks. We track restoration so we can surface a small banner.
+  const [draft, setDraft] = useState<Profile>(() => {
+    const restored = readPersistedDraft(baseProfile.id, baseProfile.profile_json);
+    return restored ?? deepClone(baseProfile.profile_json);
+  });
+  const [restoredFromStorage, setRestoredFromStorage] = useState(() =>
+    readPersistedDraft(baseProfile.id, baseProfile.profile_json) !== null,
+  );
   const [cached, setCached] = useState<CachedProposalRow[] | null>(null);
   const [baselineDecisions, setBaselineDecisions] = useState<PolicyPreviewDecision[] | null>(null);
   const [draftDecisions, setDraftDecisions] = useState<PolicyPreviewDecision[] | null>(null);
@@ -160,17 +204,63 @@ export function PolicyEditor({
 
   const isDirty = useMemo(() => !deepEqual(draft, baseProfile.profile_json), [draft, baseProfile.profile_json]);
 
+  // Persist the draft to localStorage on every change so a mid-demo Cmd-R
+  // doesn't lose the four-step peel setup. Keyed by profile id: when a new
+  // version saves and baseProfile.id changes, the old draft entry is
+  // orphaned (cleared on save below) and a fresh editor session starts clean.
+  useEffect(() => {
+    if (isDirty) {
+      writePersistedDraft(baseProfile.id, draft);
+    } else {
+      clearPersistedDraft(baseProfile.id);
+    }
+  }, [draft, isDirty, baseProfile.id]);
+
+  // Browser-level guard: if the user closes the tab or navigates away with
+  // unsaved edits, prompt before discarding. The actual message is
+  // browser-controlled in modern browsers; preventDefault + returnValue is
+  // the contract.
+  useEffect(() => {
+    if (!isDirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [isDirty]);
+
   async function handleSave() {
     setSaving(true);
     setError(null);
     try {
       await saveProfile({ token, profile: draft });
+      // Persisted draft no longer applies — saving creates a new profile id.
+      // Clear both the old key and any future-keyed leftovers.
+      clearPersistedDraft(baseProfile.id);
       onSaved();
     } catch (e: any) {
       setError(e?.message ?? String(e));
     } finally {
       setSaving(false);
     }
+  }
+
+  function handleCancel() {
+    if (isDirty) {
+      const ok = window.confirm(
+        'Discard your unsaved policy edits? They will not be saved.',
+      );
+      if (!ok) return;
+    }
+    clearPersistedDraft(baseProfile.id);
+    onCancel();
+  }
+
+  function handleDiscardRestored() {
+    setDraft(deepClone(baseProfile.profile_json));
+    clearPersistedDraft(baseProfile.id);
+    setRestoredFromStorage(false);
   }
 
   return (
@@ -183,7 +273,7 @@ export function PolicyEditor({
           </p>
         </div>
         <div className="editor-actions">
-          <button className="btn" onClick={onCancel} disabled={saving}>Cancel</button>
+          <button className="btn" onClick={handleCancel} disabled={saving}>Cancel</button>
           <button
             className="btn primary"
             onClick={handleSave}
@@ -194,6 +284,17 @@ export function PolicyEditor({
           </button>
         </div>
       </div>
+
+      {restoredFromStorage && (
+        <div className="editor-restored-banner" role="status">
+          <span>
+            Restored unsaved edits from your last session.
+          </span>
+          <button className="link-btn" onClick={handleDiscardRestored}>
+            Discard
+          </button>
+        </div>
+      )}
 
       {error && <div className="modal-error" style={{ marginTop: 12 }}>{error}</div>}
 
