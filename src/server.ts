@@ -110,6 +110,23 @@ function publicEnv(): Record<string, string> {
       out[k] = v;
     }
   }
+  // Derived: expose the model id and route the pipeline would actually pick.
+  // pickModel() is pure (env-only, no I/O), so this is cheap. The frontend
+  // uses these to render the trust panel without hardcoding the model name —
+  // when the deployed image switches sonnet→opus, the panel updates.
+  // Honors any explicit MODEL_PUBLIC / MODEL_ROUTE_PUBLIC override from the
+  // deploy env.
+  if (!out.MODEL_PUBLIC || !out.MODEL_ROUTE_PUBLIC) {
+    try {
+      const { info } = pickModel('sonnet');
+      if (!out.MODEL_PUBLIC) out.MODEL_PUBLIC = info.modelId;
+      if (!out.MODEL_ROUTE_PUBLIC) out.MODEL_ROUTE_PUBLIC = info.route;
+    } catch {
+      // pickModel throws when no provider is configured (LLM_PROVIDER=off,
+      // or local dev without credentials). Leave the keys unset; the
+      // frontend falls back to "configured".
+    }
+  }
   return out;
 }
 

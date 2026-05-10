@@ -515,8 +515,8 @@ function TEEProofPanel({ info, error }: { info: BackendInfo | null; error: strin
           <ProofItem label="Wallet" value={info?.wallet.address ? shortAddr(info.wallet.address) : 'loading'} title={info?.wallet.address} />
           <ProofItem label="Machine" value={machine ?? 'not attested'} />
           <ProofItem label="Commit" value={env.GIT_COMMIT_PUBLIC ? env.GIT_COMMIT_PUBLIC.slice(0, 10) : 'unknown'} title={env.GIT_COMMIT_PUBLIC} />
-          <ProofItem label="Model route" value={isTee ? 'eigen-proxy' : 'backend default'} />
-          <ProofItem label="Model" value={isTee ? 'claude-sonnet-4.6' : 'configured'} />
+          <ProofItem label="Model route" value={modelRoute(env, isTee)} />
+          <ProofItem label="Model" value={modelLabel(env, isTee)} title={env.MODEL_PUBLIC} />
           <ProofItem label="Attestation" value={attestationLabel} title={imageDigest} />
           <a
             className="proof-item proof-item-link"
@@ -572,4 +572,18 @@ function eigenAppId(env: Record<string, string>): string {
 
 function eigenVerifyUrl(env: Record<string, string>): string {
   return `https://verify.eigencloud.xyz/app/${eigenAppId(env)}`;
+}
+
+// MODEL_PUBLIC and MODEL_ROUTE_PUBLIC come from the backend's /env response.
+// The server derives them from pickModel() at request time, so they always
+// reflect what the pipeline would actually use. Local dev with no LLM
+// credentials returns nothing — fall back to a neutral label.
+function modelLabel(env: Record<string, string>, isTee: boolean): string {
+  if (env.MODEL_PUBLIC) return env.MODEL_PUBLIC;
+  return isTee ? 'unconfigured' : 'configured';
+}
+
+function modelRoute(env: Record<string, string>, isTee: boolean): string {
+  if (env.MODEL_ROUTE_PUBLIC) return env.MODEL_ROUTE_PUBLIC;
+  return isTee ? 'eigen-proxy' : 'backend default';
 }
