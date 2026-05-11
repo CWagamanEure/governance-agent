@@ -478,6 +478,65 @@ export async function fetchSubmitAllowlist(): Promise<string[]> {
   return j.spaces ?? [];
 }
 
+// ---------------------------------------------------------------------------
+// Autopilot batch run (dry-run preview + live submit)
+// ---------------------------------------------------------------------------
+
+export type AutopilotPlanItem = {
+  proposal_id: string;
+  title: string | null;
+  space: string | null;
+  decision: 'FOR' | 'AGAINST' | 'ABSTAIN' | 'MANUAL_REVIEW' | null;
+  confidence: number | null;
+  eligible: boolean;
+  reason?: string;
+  submitted?: { ok: boolean; snapshot_url?: string; error?: string };
+};
+
+export type AutopilotRunResult = {
+  policy_hash: string;
+  autopilot: {
+    enabled: boolean;
+    min_confidence: number;
+    decisions: Array<'FOR' | 'AGAINST' | 'ABSTAIN'>;
+  };
+  plan: AutopilotPlanItem[];
+  dry_run: boolean;
+  submitted_count: number;
+  capped: boolean;
+};
+
+export async function runAutopilot(args: {
+  token: string;
+  proposals: any[];
+  dry_run: boolean;
+  max_votes?: number;
+}): Promise<AutopilotRunResult> {
+  const r = await fetch(`${BACKEND_URL}/pipeline/autopilot-run`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${args.token}`,
+    },
+    body: JSON.stringify({
+      proposals: args.proposals,
+      dry_run: args.dry_run,
+      max_votes: args.max_votes,
+    }),
+  });
+  const text = await r.text();
+  let body: any;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new Error(`autopilot-run failed: ${r.status} ${text}`);
+  }
+  if (!r.ok) {
+    throw new Error(body?.message ?? body?.error ?? `autopilot-run failed: ${r.status}`);
+  }
+  return body;
+}
+
 export async function submitVoteEnvelope(args: {
   token: string;
   envelope: any;
