@@ -2018,6 +2018,21 @@ input[type="range"] {
 
 .diff-list-head { margin-bottom: 4px; }
 
+.diff-group { display: flex; flex-direction: column; gap: 6px; }
+.diff-group + .diff-group { margin-top: 10px; }
+.diff-group-head {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  color: var(--fg-soft);
+  padding: 2px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.diff-group-calibration .diff-group-head { color: #d4a657; border-bottom-color: rgba(212,166,87,0.35); }
+.diff-group-real .diff-group-head { color: var(--accent); border-bottom-color: rgba(98,184,255,0.35); }
+
 .diff-item {
   background: var(--bg-elev-2);
   border-left: 2px solid var(--accent);
@@ -2053,22 +2068,9 @@ input[type="range"] {
   letter-spacing: 0.04em;
 }
 
-.corpus-badge {
-  display: inline-block;
-  font-size: 9.5px;
-  font-family: var(--mono);
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  padding: 1px 5px;
-  border-radius: 3px;
-  margin-right: 6px;
-  vertical-align: middle;
-  color: var(--bg);
-}
-
-/* DaoBadge — per-proposal space label, same visual style as CAL/REAL.
-   Background is overridden inline for known spaces via the component;
-   the fallback gray applies to any unrecognized space id. */
+/* DaoBadge — per-proposal space label. Background is overridden inline
+   for known spaces via the component; the fallback gray applies to any
+   unrecognized space id. */
 .dao-badge {
   display: inline-block;
   font-size: 9.5px;
@@ -2081,14 +2083,6 @@ input[type="range"] {
   vertical-align: middle;
   color: var(--bg);
   background: var(--fg-soft);
-}
-
-.corpus-calibration {
-  background: #d4a657;
-}
-
-.corpus-real {
-  background: var(--accent);
 }
 
 .diff-item-calibration {

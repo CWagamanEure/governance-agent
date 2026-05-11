@@ -20,6 +20,7 @@ import {
   type PolicyPreviewDecision,
   type StoredProfile,
 } from './api';
+import { DaoBadge } from './DaoBadge';
 
 // Mirrors policy.ts. Keep in sync — out-of-sync values just won't render
 // editor controls, they don't break the saved profile shape.
@@ -220,27 +221,34 @@ export function PolicyEditor({
   const diffs = useMemo(() => {
     if (!baselineDecisions || !draftDecisions) return [];
     const baseMap = new Map(baselineDecisions.map((d) => [d.proposal_id, d]));
-    // Look up each proposal's source corpus so the diff list can label
-    // calibration vs. real Arbitrum entries — the calibration-vs-real
-    // comparison is the most important moment in the demo.
-    const corpusMap = new Map(
+    // Look up each proposal's source corpus + space so the diff list can
+    // label calibration vs. real entries and show a DaoBadge for the real
+    // ones. The calibration-vs-real comparison is the most important
+    // moment in the demo.
+    type CorpusInfo = { corpus: 'calibration' | 'real'; space: string };
+    const corpusMap = new Map<string, CorpusInfo>(
       (cached ?? []).map((c) => [
         c.proposal.id,
-        c.proposal.space === 'calibration.gov-agent' ? 'calibration' : 'real',
-      ] as const),
+        {
+          corpus: c.proposal.space === 'calibration.gov-agent' ? 'calibration' : 'real',
+          space: c.proposal.space,
+        } satisfies CorpusInfo,
+      ]),
     );
-    const out: { id: string; title: string | null; from: Decision; to: Decision; corpus: 'calibration' | 'real'; ruleIds: string[]; autopilotEligible: boolean; confidence: number }[] = [];
+    const out: { id: string; title: string | null; from: Decision; to: Decision; corpus: 'calibration' | 'real'; space: string; ruleIds: string[]; autopilotEligible: boolean; confidence: number }[] = [];
     const autopilot = draft.autopilot as AutopilotConfig | undefined;
     for (const d of draftDecisions) {
       const b = baseMap.get(d.proposal_id);
       if (!b) continue;
       if (b.decision !== d.decision) {
+        const info = corpusMap.get(d.proposal_id);
         out.push({
           id: d.proposal_id,
           title: d.proposal_title,
           from: b.decision,
           to: d.decision,
-          corpus: corpusMap.get(d.proposal_id) ?? 'real',
+          corpus: info?.corpus ?? 'real',
+          space: info?.space ?? '',
           ruleIds: d.triggered_rule_ids ?? [],
           autopilotEligible: isAutopilotEligibleClient(d, autopilot),
           confidence: d.confidence,
@@ -776,7 +784,7 @@ function DiffPanel({
   previewing: boolean;
   baselineDecisions: PolicyPreviewDecision[] | null;
   draftDecisions: PolicyPreviewDecision[] | null;
-  diffs: { id: string; title: string | null; from: Decision; to: Decision; corpus: 'calibration' | 'real'; ruleIds: string[]; autopilotEligible: boolean; confidence: number }[];
+  diffs: { id: string; title: string | null; from: Decision; to: Decision; corpus: 'calibration' | 'real'; space: string; ruleIds: string[]; autopilotEligible: boolean; confidence: number }[];
   cached: CachedProposalRow[] | null;
 }) {
   const baseCounts = decisionCounts(baselineDecisions);
@@ -833,43 +841,56 @@ function DiffPanel({
             <div className="diff-list-head muted tiny">
               {diffs.length} proposal{diffs.length === 1 ? '' : 's'} would have changed:
             </div>
-            {diffs.map((d) => (
-              <div key={d.id} className={`diff-item diff-item-${d.corpus}`}>
-                <div className="diff-item-title">
-                  <span className={`corpus-badge corpus-${d.corpus}`}>
-                    {d.corpus === 'calibration' ? 'CAL' : 'REAL'}
-                  </span>
-                  {d.autopilotEligible && (
-                    <span
-                      className="autopilot-badge"
-                      title={`Autopilot would auto-vote on this proposal at confidence ${d.confidence.toFixed(2)}`}
-                    >
-                      AUTO
-                    </span>
-                  )}
-                  {d.title ?? d.id.slice(0, 14) + '…'}
+            {(['calibration', 'real'] as const).map((corpus) => {
+              const group = diffs.filter((d) => d.corpus === corpus);
+              if (group.length === 0) return null;
+              const heading =
+                corpus === 'calibration'
+                  ? `Calibration set (${group.length})`
+                  : `Real proposals (${group.length})`;
+              return (
+                <div key={corpus} className={`diff-group diff-group-${corpus}`}>
+                  <div className="diff-group-head">{heading}</div>
+                  {group.map((d) => (
+                    <div key={d.id} className={`diff-item diff-item-${d.corpus}`}>
+                      <div className="diff-item-title">
+                        {d.corpus === 'real' && d.space && (
+                          <DaoBadge space={d.space} />
+                        )}
+                        {d.autopilotEligible && (
+                          <span
+                            className="autopilot-badge"
+                            title={`Autopilot would auto-vote on this proposal at confidence ${d.confidence.toFixed(2)}`}
+                          >
+                            AUTO
+                          </span>
+                        )}
+                        {d.title ?? d.id.slice(0, 14) + '…'}
+                      </div>
+                      <div className="diff-item-decision">
+                        <span className={`diff-from action-${d.from}`}>{d.from}</span>
+                        <span className="diff-arrow">→</span>
+                        <span className={`diff-to action-${d.to}`}>{d.to}</span>
+                      </div>
+                      {d.ruleIds.length > 0 && (
+                        <div className="diff-item-rule">
+                          <span className="diff-rule-label">binding rule</span>
+                          <code className="diff-rule-id">{d.ruleIds[0]}</code>
+                          {d.ruleIds.length > 1 && (
+                            <span
+                              className="diff-rule-more"
+                              title={`also fired:\n${d.ruleIds.slice(1).join('\n')}`}
+                            >
+                              +{d.ruleIds.length - 1}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
                 </div>
-                <div className="diff-item-decision">
-                  <span className={`diff-from action-${d.from}`}>{d.from}</span>
-                  <span className="diff-arrow">→</span>
-                  <span className={`diff-to action-${d.to}`}>{d.to}</span>
-                </div>
-                {d.ruleIds.length > 0 && (
-                  <div className="diff-item-rule">
-                    <span className="diff-rule-label">binding rule</span>
-                    <code className="diff-rule-id">{d.ruleIds[0]}</code>
-                    {d.ruleIds.length > 1 && (
-                      <span
-                        className="diff-rule-more"
-                        title={`also fired:\n${d.ruleIds.slice(1).join('\n')}`}
-                      >
-                        +{d.ruleIds.length - 1}
-                      </span>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </>
         )}
       </div>
