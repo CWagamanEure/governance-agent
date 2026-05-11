@@ -127,7 +127,6 @@ function Dashboard({ tab }: { tab: Tab }) {
   const [auth, setAuth] = useState<AuthState>({ status: 'loading' });
   const [profile, setProfile] = useState<StoredProfile | null>(null);
   const [profileLoaded, setProfileLoaded] = useState(false);
-  const [demoProgress, setDemoProgress] = useState(() => readDemoProgress());
   const [demoResetVersion, setDemoResetVersion] = useState(0);
   const { info, error, errors, retry } = useBackendInfo();
 
@@ -178,22 +177,12 @@ function Dashboard({ tab }: { tab: Tab }) {
     if (profile) setProfile({ ...profile, profile: null });
   }
 
-  function markLiveInferenceRun() {
-    setDemoProgress((prev) => {
-      const next = { ...prev, liveInferenceRun: true };
-      writeDemoProgress(next);
-      return next;
-    });
-  }
-
-  async function resetDemoProgress() {
+  async function handleReset() {
     const confirmed = window.confirm(
       'Reset? This wipes your votes and policy versions and returns you to onboarding. Your wallet session stays signed in.',
     );
     if (!confirmed) return;
 
-    const next = { liveInferenceRun: false };
-    writeDemoProgress(next);
     if (auth.status === 'authed') {
       clearRecentActivity(auth.address);
       const token = getStoredToken();
@@ -203,18 +192,16 @@ function Dashboard({ tab }: { tab: Tab }) {
           const fresh = await getProfile(token);
           setProfile(fresh);
         } catch (e: any) {
-          alert(`Demo reset failed: ${e?.message ?? String(e)}`);
+          alert(`Reset failed: ${e?.message ?? String(e)}`);
           return;
         }
       }
     }
-    setDemoProgress(next);
     setDemoResetVersion((v) => v + 1);
   }
 
   const hasProfile = !!profile?.profile;
   const profileReady = profileLoaded || auth.status === 'anonymous';
-  const attestationReady = info?.attestation?.status === 'available';
 
   // Derived once and threaded to every consumer that needs to fan across
   // the allowlisted DAOs (Activity, Proposals, Policy → SignAndVerifyCard,
@@ -231,22 +218,11 @@ function Dashboard({ tab }: { tab: Tab }) {
         onSignOut={handleSignOut}
         info={info}
         currentTab={tab}
+        onReset={handleReset}
       />
       <TrustRibbon info={info} error={error} errors={errors} onRetry={retry} />
 
       <main className="dash-main">
-        <DemoGuide
-          auth={auth}
-          hasProfile={hasProfile}
-          profileLoaded={profileReady}
-          liveInferenceRun={demoProgress.liveInferenceRun}
-          attestationReady={attestationReady}
-          currentTab={tab}
-          verifyUrl={eigenVerifyUrl(info?.env ?? {})}
-          onSignIn={handleSignIn}
-          onReset={resetDemoProgress}
-        />
-
         {auth.status === 'loading' && <p className="muted">Resuming session…</p>}
 
         {auth.status !== 'loading' && tab === 'activity' && (
@@ -267,8 +243,6 @@ function Dashboard({ tab }: { tab: Tab }) {
             hasProfile={hasProfile}
             profileLoaded={profileReady}
             onSignIn={handleSignIn}
-            demoLivePending={!demoProgress.liveInferenceRun}
-            onLiveTeeRun={markLiveInferenceRun}
             daoSpace={primaryDaoSpace}
             fallbackSpaces={fallbackDaoSpaces}
           />
@@ -295,142 +269,16 @@ function Dashboard({ tab }: { tab: Tab }) {
   );
 }
 
-type DemoProgress = {
-  liveInferenceRun: boolean;
-};
-
-const DEMO_PROGRESS_KEY = 'gov-agent:demo-progress:v1';
-
 function recentActivityKey(address: string): string {
   return `gov-agent:recent-activity:${address.toLowerCase()}`;
-}
-
-function readDemoProgress(): DemoProgress {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(DEMO_PROGRESS_KEY) ?? '{}');
-    return { liveInferenceRun: parsed?.liveInferenceRun === true };
-  } catch {
-    return { liveInferenceRun: false };
-  }
-}
-
-function writeDemoProgress(progress: DemoProgress) {
-  try {
-    localStorage.setItem(DEMO_PROGRESS_KEY, JSON.stringify(progress));
-  } catch {
-    // Demo progress is cosmetic; ignore storage failures.
-  }
 }
 
 function clearRecentActivity(address: string) {
   try {
     localStorage.removeItem(recentActivityKey(address));
   } catch {
-    // Demo reset is cosmetic; ignore storage failures.
+    // Local cache only; ignore storage failures.
   }
-}
-
-function DemoGuide({
-  auth,
-  hasProfile,
-  profileLoaded,
-  liveInferenceRun,
-  attestationReady,
-  currentTab,
-  verifyUrl,
-  onSignIn,
-  onReset,
-}: {
-  auth: AuthState;
-  hasProfile: boolean;
-  profileLoaded: boolean;
-  liveInferenceRun: boolean;
-  attestationReady: boolean;
-  currentTab: Tab;
-  verifyUrl: string;
-  onSignIn: () => void;
-  onReset: () => void;
-}) {
-  const walletDone = auth.status === 'authed';
-  const policyDone = walletDone && profileLoaded && hasProfile;
-  const liveDone = liveInferenceRun;
-  const proofDone = liveDone && attestationReady;
-  const doneCount = [walletDone, policyDone, liveDone, proofDone].filter(Boolean).length;
-
-  const steps = [
-    {
-      label: 'Connect wallet',
-      detail: auth.status === 'authed' ? shortAddr(auth.address) : 'SIWE session required',
-      done: walletDone,
-      action: !walletDone && auth.status !== 'loading'
-        ? <button className="btn small primary" onClick={onSignIn}>Connect</button>
-        : null,
-    },
-    {
-      label: 'Save policy',
-      detail: policyDone ? 'wallet policy active' : walletDone ? 'values + calibration' : 'after wallet connect',
-      done: policyDone,
-      action: walletDone && !policyDone
-        ? <a className="btn small primary" href="#/app/policy">{currentTab === 'policy' ? 'Finish' : 'Open policy'}</a>
-        : null,
-    },
-    {
-      label: 'Run live TEE inference',
-      detail: liveDone ? 'Eigen proxy call observed' : policyDone ? 'use first proposal card' : 'after policy save',
-      done: liveDone,
-      action: policyDone && !liveDone
-        ? <a className="btn small primary" href="#/app/proposals">{currentTab === 'proposals' ? 'Run on card' : 'Open proposals'}</a>
-        : null,
-    },
-    {
-      label: 'Show proof',
-      detail: proofDone
-        ? 'attestation + image digest ready'
-        : liveDone
-          ? 'attestation pending'
-          : 'after live run',
-      done: proofDone,
-      // Only surface the Verify link once the attestation report is available;
-      // showing it earlier risks the operator clicking through to a verifier
-      // that has not yet seen the deployed image digest.
-      action: proofDone
-        ? <a className="btn small" href={verifyUrl} target="_blank" rel="noreferrer">Verify</a>
-        : null,
-    },
-  ];
-
-  return (
-    <section className="demo-guide" aria-label="Demo path">
-      <div className="demo-guide-head">
-        <div>
-          <div className="dft-label">Demo path</div>
-          <strong>{doneCount}/4 ready</strong>
-        </div>
-        <button
-          className="link-btn demo-reset"
-          onClick={onReset}
-          title="Wipe saved policy and voting history, then re-run onboarding"
-        >
-          Reset
-        </button>
-      </div>
-      <div className="demo-guide-steps">
-        {steps.map((step, i) => (
-          <div
-            key={step.label}
-            className={`demo-step ${step.done ? 'done' : doneCount === i ? 'current' : 'blocked'}`}
-          >
-            <span className="demo-step-index">{step.done ? '✓' : i + 1}</span>
-            <div className="demo-step-main">
-              <span>{step.label}</span>
-              <code>{step.detail}</code>
-            </div>
-            {step.action && <div className="demo-step-action">{step.action}</div>}
-          </div>
-        ))}
-      </div>
-    </section>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -447,14 +295,16 @@ function TopBar({
   auth,
   onSignIn,
   onSignOut,
-  info,
+  info: _info,
   currentTab,
+  onReset,
 }: {
   auth: AuthState;
   onSignIn: () => void;
   onSignOut: () => void;
   info: BackendInfo | null;
   currentTab: Tab;
+  onReset: () => void;
 }) {
   return (
     <header className="topbar">
@@ -478,6 +328,15 @@ function TopBar({
         </nav>
 
         <div className="topbar-right">
+          {auth.status === 'authed' && (
+            <button
+              className="link-btn topbar-reset"
+              onClick={onReset}
+              title="Wipe saved policy and voting history, then re-run onboarding"
+            >
+              Reset
+            </button>
+          )}
           <WalletButton auth={auth} onSignIn={onSignIn} onSignOut={onSignOut} />
         </div>
       </div>

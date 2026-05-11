@@ -71,8 +71,6 @@ export function Proposals({
   hasProfile,
   profileLoaded,
   onSignIn,
-  demoLivePending,
-  onLiveTeeRun,
   daoSpace,
   fallbackSpaces,
 }: {
@@ -80,8 +78,6 @@ export function Proposals({
   hasProfile: boolean;
   profileLoaded: boolean;
   onSignIn: () => void;
-  demoLivePending?: boolean;
-  onLiveTeeRun?: () => void;
   daoSpace: string | null;
   fallbackSpaces: string[];
 }) {
@@ -174,7 +170,7 @@ export function Proposals({
           scannedSpaces={scannedSpaces}
         />
         <div className="proposals">
-          {(activeItems ?? []).map((p, i) => (
+          {(activeItems ?? []).map((p) => (
             <ProposalCard
               key={`${p.space}:${p.id}`}
               proposalId={p.id}
@@ -182,8 +178,6 @@ export function Proposals({
               authed={false}
               recommendationsEnabled={recommendationsEnabled}
               userSigned={null}
-              demoFocus={demoLivePending === true && i === 0}
-              onLiveTeeRun={onLiveTeeRun}
             />
           ))}
         </div>
@@ -215,7 +209,7 @@ export function Proposals({
         scannedSpaces={scannedSpaces}
       />
       <div className="proposals">
-        {(activeItems ?? []).map((p, i) => (
+        {(activeItems ?? []).map((p) => (
           <ProposalCard
             key={`${p.space}:${p.id}`}
             proposalId={p.id}
@@ -223,8 +217,6 @@ export function Proposals({
             authed={auth.status === 'authed'}
             recommendationsEnabled={recommendationsEnabled}
             userSigned={userSignedById[p.id] ?? null}
-            demoFocus={demoLivePending === true && i === 0}
-            onLiveTeeRun={onLiveTeeRun}
           />
         ))}
       </div>
@@ -294,16 +286,12 @@ function ProposalCard({
   authed,
   recommendationsEnabled,
   userSigned,
-  demoFocus,
-  onLiveTeeRun,
 }: {
   proposalId: string;
   space: string;
   authed: boolean;
   recommendationsEnabled: boolean;
   userSigned: MinimalActivityEntry | null;
-  demoFocus?: boolean;
-  onLiveTeeRun?: () => void;
 }) {
   const [proposal, setProposal] = useState<any | null>(null);
   const [pipeline, setPipeline] = useState<PipelineResult | null>(null);
@@ -348,9 +336,6 @@ function ProposalCard({
       });
       setLiveRun(live);
       setSigned(null);
-      if (live.extraction?.source === 'live' && live.analysis) {
-        onLiveTeeRun?.();
-      }
 
       if (recommendationsEnabled) {
         setPipeline(live);
@@ -533,7 +518,7 @@ function ProposalCard({
 
       <footer className="prop-actions">
         <button
-          className={`btn ${demoFocus && !liveRun ? 'demo-focus-action' : ''}`}
+          className="btn"
           onClick={runLiveInTee}
           disabled={liveLoading || !proposal}
         >
