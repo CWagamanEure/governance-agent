@@ -449,7 +449,6 @@ function DefaultActionField({ draft, setDraft }: { draft: Profile; setDraft: (p:
   return (
     <section className="editor-section">
       <h4>Default action</h4>
-      <p className="muted tiny">What happens when no other rule matches.</p>
       <select
         value={draft.default_action ?? 'MANUAL_REVIEW'}
         onChange={(e) => setDraft({ ...draft, default_action: e.target.value })}
@@ -466,26 +465,24 @@ function DefaultActionField({ draft, setDraft }: { draft: Profile; setDraft: (p:
 function LargeTreasuryField({ draft, setDraft }: { draft: Profile; setDraft: (p: Profile) => void }) {
   return (
     <section className="editor-section">
-      <h4>Large treasury review threshold</h4>
-      <p className="muted tiny">
-        Treasury spends above this dollar amount go to MANUAL_REVIEW regardless of category default.
-      </p>
-      <input
-        type="text"
-        inputMode="decimal"
-        value={draft.large_treasury_usd ?? ''}
-        onChange={(e) => {
-          const v = parseUsdInput(e.target.value, draft.large_treasury_usd ?? null);
-          setDraft({ ...draft, large_treasury_usd: v });
-        }}
-        placeholder="(no threshold)"
-        className="editor-input"
-      />
-      {typeof draft.large_treasury_usd === 'number' && (
-        <p className="muted tiny" style={{ marginTop: 4 }}>
-          ${draft.large_treasury_usd.toLocaleString()}
-        </p>
-      )}
+      <h4>Large treasury threshold</h4>
+      <p className="editor-helper">Spends above this go to MANUAL_REVIEW.</p>
+      <div className="editor-input-row">
+        <input
+          type="text"
+          inputMode="decimal"
+          value={draft.large_treasury_usd ?? ''}
+          onChange={(e) => {
+            const v = parseUsdInput(e.target.value, draft.large_treasury_usd ?? null);
+            setDraft({ ...draft, large_treasury_usd: v });
+          }}
+          placeholder="(no threshold)"
+          className="editor-input"
+        />
+        {typeof draft.large_treasury_usd === 'number' && (
+          <span className="editor-input-echo">${draft.large_treasury_usd.toLocaleString()}</span>
+        )}
+      </div>
     </section>
   );
 }
@@ -523,16 +520,12 @@ function CategoryDefaultsField({ draft, setDraft }: { draft: Profile; setDraft: 
   return (
     <section className="editor-section">
       <div className="editor-section-head">
-        <h4>Category defaults (autovote rules)</h4>
+        <h4>Category defaults</h4>
         <button className="btn small" onClick={add}>+ Add rule</button>
       </div>
-      <p className="muted tiny">
-        Per-category default action. Use FOR/AGAINST for autovoting; MANUAL_REVIEW to flag every proposal in this category.
-      </p>
+      <p className="editor-helper">FOR/AGAINST autovotes; MANUAL_REVIEW flags every proposal in the category.</p>
       {defaults.length === 0 && (
-        <p className="muted tiny" style={{ marginTop: 8 }}>
-          No category defaults. Unmatched proposals fall through to default action.
-        </p>
+        <p className="editor-helper-empty">No rules. Unmatched proposals fall through to default action.</p>
       )}
       {defaults.map((d, i) => (
         <div key={i} className="editor-rule">
@@ -628,22 +621,14 @@ function FollowedSpacesField({
     return (
       <section className="editor-section">
         <h4>Followed DAOs</h4>
-        <p className="muted tiny">
-          No DAOs are configured in the deploy environment. Ask the operator
-          to set DAO_SPACE_PUBLIC (and optionally
-          SNAPSHOT_FALLBACK_SPACES_PUBLIC) so this user can pick which to
-          follow.
-        </p>
+        <p className="editor-helper-empty">No DAOs configured in this deploy.</p>
       </section>
     );
   }
   return (
     <section className="editor-section">
       <h4>Followed DAOs</h4>
-      <p className="muted tiny">
-        Autopilot only scans proposals in DAOs you follow. Unchecking a DAO
-        keeps the deploy from spending LLM tokens on its proposals for you.
-      </p>
+      <p className="editor-helper">Autopilot only scans the DAOs you follow.</p>
       <div className="editor-checkbox-grid">
         {allowlistedSpaces.map((space) => (
           <label key={space} className="editor-checkbox">
@@ -670,9 +655,7 @@ function ManualReviewCategoriesField({ draft, setDraft }: { draft: Profile; setD
   return (
     <section className="editor-section">
       <h4>Always require my review</h4>
-      <p className="muted tiny">
-        Any proposal in these categories goes to MANUAL_REVIEW regardless of other rules.
-      </p>
+      <p className="editor-helper">Categories forced to MANUAL_REVIEW.</p>
       <div className="editor-checkbox-grid">
         {CATEGORIES.map((c) => (
           <label key={c} className="editor-checkbox">
@@ -695,9 +678,7 @@ function ManualReviewFlagsField({ draft, setDraft }: { draft: Profile; setDraft:
   return (
     <section className="editor-section">
       <h4>Manual review flags</h4>
-      <p className="muted tiny">
-        Situational triggers — promote any matching proposal to MANUAL_REVIEW.
-      </p>
+      <p className="editor-helper">Situational triggers that force MANUAL_REVIEW.</p>
       <div className="editor-checkbox-grid">
         {FLAGS.map((f) => (
           <label key={f} className="editor-checkbox">
@@ -718,40 +699,44 @@ function HardRulesField({ draft, setDraft }: { draft: Profile; setDraft: (p: Pro
   return (
     <section className="editor-section">
       <h4>Hard limits</h4>
-      <p className="muted tiny">Global guardrails — applied before category defaults.</p>
-      <label className="editor-inline">
-        Single-recipient cap: $
-        <input
-          type="text"
-          inputMode="decimal"
-          value={hard.max_single_recipient_treasury_usd ?? ''}
-          onChange={(e) => {
-            const v = parseUsdInput(e.target.value, hard.max_single_recipient_treasury_usd ?? null);
-            update({ max_single_recipient_treasury_usd: v });
-          }}
-          placeholder="(no cap)"
-          className="editor-input small"
-        />
-        {typeof hard.max_single_recipient_treasury_usd === 'number' && (
-          <span className="muted tiny" style={{ marginLeft: 4 }}>
-            ${hard.max_single_recipient_treasury_usd.toLocaleString()}
-          </span>
-        )}
-      </label>
-      <label className="editor-inline" style={{ display: 'block', marginTop: 8 }}>
-        <input
-          type="checkbox"
-          checked={!!hard.vote_against_emission_increases}
-          onChange={(e) => update({ vote_against_emission_increases: e.target.checked })}
-        /> Vote AGAINST emission increases
-      </label>
-      <label className="editor-inline" style={{ display: 'block', marginTop: 4 }}>
-        <input
-          type="checkbox"
-          checked={!!hard.require_milestones_for_treasury}
-          onChange={(e) => update({ require_milestones_for_treasury: e.target.checked })}
-        /> Require milestones on treasury spends
-      </label>
+      <p className="editor-helper">Global guardrails, applied before category defaults.</p>
+      <div className="editor-stack">
+        <label className="editor-inline">
+          Single-recipient cap: $
+          <input
+            type="text"
+            inputMode="decimal"
+            value={hard.max_single_recipient_treasury_usd ?? ''}
+            onChange={(e) => {
+              const v = parseUsdInput(e.target.value, hard.max_single_recipient_treasury_usd ?? null);
+              update({ max_single_recipient_treasury_usd: v });
+            }}
+            placeholder="(no cap)"
+            className="editor-input small"
+          />
+          {typeof hard.max_single_recipient_treasury_usd === 'number' && (
+            <span className="editor-input-echo">
+              ${hard.max_single_recipient_treasury_usd.toLocaleString()}
+            </span>
+          )}
+        </label>
+        <label className="editor-checkbox">
+          <input
+            type="checkbox"
+            checked={!!hard.vote_against_emission_increases}
+            onChange={(e) => update({ vote_against_emission_increases: e.target.checked })}
+          />
+          <span>Vote AGAINST emission increases</span>
+        </label>
+        <label className="editor-checkbox">
+          <input
+            type="checkbox"
+            checked={!!hard.require_milestones_for_treasury}
+            onChange={(e) => update({ require_milestones_for_treasury: e.target.checked })}
+          />
+          <span>Require milestones on treasury spends</span>
+        </label>
+      </div>
     </section>
   );
 }
@@ -782,44 +767,38 @@ function AutopilotField({
             checked={!!ap.enabled}
             onChange={(e) => update({ enabled: e.target.checked })}
           />
-          enabled
+          <span>enabled</span>
         </label>
       </div>
-      <p className="muted tiny">
-        Cryptographically authorize the system to vote on your behalf without per-vote review,
-        gated by a confidence floor. The policy itself decides FOR/AGAINST/ABSTAIN per
-        proposal; autopilot only fires when the engine is confident enough. Hashed into the
-        policy on save.
+      <p className="editor-helper">
+        Autovote when the engine clears your confidence floor. Hashed into the policy on save.
       </p>
-
-      <label className="autopilot-slider-row" style={{ marginTop: 10 }}>
-        <span className="autopilot-slider-label">
-          Confidence floor:{' '}
-          <code className="autopilot-floor">{ap.min_confidence.toFixed(2)}</code>
-        </span>
-        <input
-          type="range"
-          min={0}
-          max={1}
-          step={0.01}
-          value={ap.min_confidence}
-          onChange={(e) => update({ min_confidence: Number(e.target.value) })}
-          className="autopilot-slider"
-          disabled={!ap.enabled}
-          aria-label="Autopilot confidence floor"
-          aria-valuetext={`${(ap.min_confidence * 100).toFixed(0)} percent confidence`}
-        />
-      </label>
-
-      <div
-        className={`autopilot-summary ${ap.enabled ? 'on' : 'off'}`}
-        style={{ marginTop: 12 }}
-        role="status"
-      >
-        Autopilot would currently vote on{' '}
-        <strong>{ap.enabled ? summary.eligible : 0}</strong> of {summary.total} cached
-        proposals at this configuration
-        {!ap.enabled && <span className="muted tiny"> (toggle on to evaluate)</span>}.
+      <div className="editor-stack">
+        <label className="autopilot-slider-row">
+          <span className="autopilot-slider-label">
+            Confidence floor{' '}
+            <code className="autopilot-floor">{ap.min_confidence.toFixed(2)}</code>
+          </span>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={ap.min_confidence}
+            onChange={(e) => update({ min_confidence: Number(e.target.value) })}
+            className="autopilot-slider"
+            disabled={!ap.enabled}
+            aria-label="Autopilot confidence floor"
+            aria-valuetext={`${(ap.min_confidence * 100).toFixed(0)} percent confidence`}
+          />
+        </label>
+        <div
+          className={`autopilot-summary ${ap.enabled ? 'on' : 'off'}`}
+          role="status"
+        >
+          Would vote on{' '}
+          <strong>{ap.enabled ? summary.eligible : 0}</strong> of {summary.total} cached proposals.
+        </div>
       </div>
     </section>
   );
@@ -829,14 +808,12 @@ function ReadOnlySummary({ draft }: { draft: Profile }) {
   return (
     <section className="editor-section editor-readonly">
       <h4>Other settings</h4>
-      <p className="muted tiny">
-        Stated values, delegation rules, and author blocklist are managed separately. Edit them by redoing onboarding.
-      </p>
-      <div className="muted tiny" style={{ marginTop: 8 }}>
-        <div>Stated values: {(draft.stated_values ?? []).length}</div>
-        <div>Delegation rules: {(draft.delegation_rules ?? []).length}</div>
-        <div>Author blocklist: {(draft.author_blocklist ?? []).length} addresses</div>
-      </div>
+      <p className="editor-helper">Managed via onboarding.</p>
+      <ul className="editor-readonly-list">
+        <li>Stated values: {(draft.stated_values ?? []).length}</li>
+        <li>Delegation rules: {(draft.delegation_rules ?? []).length}</li>
+        <li>Author blocklist: {(draft.author_blocklist ?? []).length}</li>
+      </ul>
     </section>
   );
 }
