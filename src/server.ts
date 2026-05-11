@@ -1281,15 +1281,29 @@ app.get('/submit-allowlist', (c) => {
  * Public snapshot of the background autopilot poller. Used by the
  * Policy page to show "last polled at..." + per-tick counts so the
  * user can see that the agent is running between manual interactions.
- * Without this surface the cron is invisible — no UI indication
- * differentiates "poller is off" from "poller is on but nothing
- * cleared the floor."
  *
- * No auth: the status is operational metadata, not per-user data.
- * Useful for ops scripts to confirm the poller actually started.
+ * No auth: the aggregate is operational metadata. We deliberately
+ * strip user_id from the errors array before responding — pollerStatus()
+ * internally tags errors with user_id for ops debugging, but the public
+ * shape only exposes the error message + a count, so a scraper cannot
+ * harvest the set of opted-in user UUIDs from this endpoint.
  */
 app.get('/poller/status', (c) => {
-  return c.json(pollerStatus());
+  const full = pollerStatus();
+  const safe = {
+    ...full,
+    lastTick: full.lastTick
+      ? {
+          ...full.lastTick,
+          // Drop user_id from each error row. The frontend status card
+          // only renders the count anyway; the message stays available
+          // (already free of user identifiers in practice — e.g.
+          // "snapshot_active_fetch_failed: timeout").
+          errors: full.lastTick.errors.map((e) => ({ message: e.message })),
+        }
+      : null,
+  };
+  return c.json(safe);
 });
 
 /**

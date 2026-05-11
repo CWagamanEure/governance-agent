@@ -526,7 +526,10 @@ export type PollerStatus = {
     userCount: number;
     itemsScored: number;
     itemsSubmitted: number;
-    errors: Array<{ user_id?: string; message: string }>;
+    // The HTTP endpoint sanitizes errors to drop user_id (so a scraper
+    // cannot harvest the set of opted-in user UUIDs). Internal callers
+    // of pollerStatus() in tests / ops scripts see the tagged form.
+    errors: Array<{ message: string }>;
   } | null;
 };
 
