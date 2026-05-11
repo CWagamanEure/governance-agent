@@ -178,12 +178,17 @@ export async function runAutopilotBatch(args: AutopilotBatchArgs): Promise<Autop
   // the /profile save boundary AND the lowercased actualSpace below.
   // Defense in depth: a profile saved by an older code path (before
   // F1 normalization) could still have mixed-case entries.
+  //
+  // Semantic: empty followed_spaces means "follow nothing" (every
+  // proposal becomes space_not_followed). This matches cron.ts and
+  // the AutopilotRunCard frontend gate. Prior code treated empty as
+  // "filter disabled, everything passes" — the opposite behavior
+  // from the other two call sites.
   const followedSet = new Set<string>(
     Array.isArray(profile.followed_spaces)
       ? profile.followed_spaces.map((s) => s.toLowerCase())
       : [],
   );
-  const followedFilterActive = followedSet.size > 0;
   const alreadyVoted = getSubmittedProposalIdsForUser(userId);
   const verificationFailures: PlanItem[] = [];
   const verifiedProposals: SnapshotProposalRaw[] = [];
@@ -215,7 +220,7 @@ export async function runAutopilotBatch(args: AutopilotBatchArgs): Promise<Autop
       });
       continue;
     }
-    if (followedFilterActive && !followedSet.has(actualSpace)) {
+    if (!followedSet.has(actualSpace)) {
       verificationFailures.push({
         proposal_id: p.id,
         title: v.title,
