@@ -49,13 +49,9 @@ type Flag = typeof FLAGS[number];
 
 type Profile = any; // schema-validated server-side
 
-const AUTOPILOT_DECISIONS = ['FOR', 'AGAINST', 'ABSTAIN'] as const;
-type AutopilotDecision = typeof AUTOPILOT_DECISIONS[number];
-
 type AutopilotConfig = {
   enabled: boolean;
   min_confidence: number;
-  decisions: AutopilotDecision[];
 };
 
 /**
@@ -69,12 +65,6 @@ function isAutopilotEligibleClient(
 ): boolean {
   if (!autopilot?.enabled) return false;
   if (d.decision === 'MANUAL_REVIEW') return false;
-  // Defensive `?? []`: a stale draft state could carry decisions=undefined
-  // before the AutopilotField initializes its defaults. Without this
-  // guard, a TypeError mid-render would crash the editor on every
-  // keystroke. Predicate is canonical at src/policy.ts isAutopilotEligible
-  // — keep both copies in sync if either changes.
-  if (!(autopilot.decisions ?? []).includes(d.decision as AutopilotDecision)) return false;
   if (d.confidence < autopilot.min_confidence) return false;
   return true;
 }
@@ -692,18 +682,9 @@ function AutopilotField({
   const ap: AutopilotConfig = draft.autopilot ?? {
     enabled: false,
     min_confidence: 0.85,
-    decisions: ['FOR'],
   };
   function update(patch: Partial<AutopilotConfig>) {
     setDraft({ ...draft, autopilot: { ...ap, ...patch } });
-  }
-  function toggleDecision(d: AutopilotDecision) {
-    const set = new Set<AutopilotDecision>(ap.decisions);
-    if (set.has(d)) set.delete(d);
-    else set.add(d);
-    // Keep canonical order so the saved JSON is stable across edits.
-    const next = AUTOPILOT_DECISIONS.filter((x) => set.has(x));
-    update({ decisions: next });
   }
   return (
     <section className="editor-section autopilot-field">
@@ -720,7 +701,9 @@ function AutopilotField({
       </div>
       <p className="muted tiny">
         Cryptographically authorize the system to vote on your behalf without per-vote review,
-        gated by a confidence floor. Hashed into the policy on save.
+        gated by a confidence floor. The policy itself decides FOR/AGAINST/ABSTAIN per
+        proposal; autopilot only fires when the engine is confident enough. Hashed into the
+        policy on save.
       </p>
 
       <label className="autopilot-slider-row" style={{ marginTop: 10 }}>
@@ -741,27 +724,6 @@ function AutopilotField({
           aria-valuetext={`${(ap.min_confidence * 100).toFixed(0)} percent confidence`}
         />
       </label>
-
-      <div className="autopilot-decisions" style={{ marginTop: 8 }}>
-        <span className="muted tiny">Eligible decisions:</span>
-        {AUTOPILOT_DECISIONS.map((d) => (
-          <label key={d} className="editor-inline" style={{ marginLeft: 8 }}>
-            <input
-              type="checkbox"
-              checked={ap.decisions.includes(d)}
-              onChange={() => toggleDecision(d)}
-              disabled={!ap.enabled}
-            />
-            <span>{d}</span>
-          </label>
-        ))}
-      </div>
-      {ap.enabled && ap.decisions.length === 0 && (
-        <div className="autopilot-warning" style={{ marginTop: 6 }} role="alert">
-          ⚠ No decision types selected — autopilot will never fire. Pick at least one
-          (FOR / AGAINST / ABSTAIN).
-        </div>
-      )}
 
       <div
         className={`autopilot-summary ${ap.enabled ? 'on' : 'off'}`}

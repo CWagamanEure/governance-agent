@@ -1122,15 +1122,6 @@ input[type="range"] {
   accent-color: var(--accent);
 }
 
-.autopilot-decisions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px;
-  font-size: 13px;
-  color: var(--fg-dim);
-}
-
 .autopilot-summary {
   padding: 8px 12px;
   border-radius: 4px;
@@ -1153,15 +1144,6 @@ input[type="range"] {
 }
 .autopilot-summary.off strong {
   color: var(--fg-soft);
-}
-
-.autopilot-warning {
-  font-size: 12px;
-  padding: 6px 10px;
-  border-radius: 4px;
-  background: rgba(244, 200, 105, 0.08);
-  border: 1px solid rgba(244, 200, 105, 0.4);
-  color: var(--warn, #f4c869);
 }
 
 .autopilot-badge {

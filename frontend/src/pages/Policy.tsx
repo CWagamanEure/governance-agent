@@ -271,12 +271,11 @@ function AutopilotRow({
   autopilot,
 }: {
   autopilot:
-    | { enabled?: boolean; min_confidence?: number; decisions?: string[] }
+    | { enabled?: boolean; min_confidence?: number }
     | undefined;
 }) {
   const enabled = autopilot?.enabled === true;
   const floor = typeof autopilot?.min_confidence === 'number' ? autopilot.min_confidence : 0.85;
-  const decisions = Array.isArray(autopilot?.decisions) ? autopilot!.decisions : ['FOR'];
   return (
     <div className="review-section">
       <div className="dft-label">Autopilot</div>
@@ -287,8 +286,6 @@ function AutopilotRow({
         </strong>
         {' · '}
         Confidence floor: <code>{floor.toFixed(2)}</code>
-        {' · '}
-        Decisions: <code>{decisions.length === 0 ? '(none)' : decisions.join(', ')}</code>
       </p>
     </div>
   );

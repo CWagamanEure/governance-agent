@@ -46,8 +46,7 @@ export function AutopilotRunCard({
   const savedAutopilot = (profile.profile_json?.autopilot ?? {
     enabled: false,
     min_confidence: 0.85,
-    decisions: ['FOR'],
-  }) as { enabled: boolean; min_confidence: number; decisions: string[] };
+  }) as { enabled: boolean; min_confidence: number };
 
   function reset() {
     runIdRef.current += 1;
@@ -152,8 +151,7 @@ export function AutopilotRunCard({
       `Run autopilot live?\n\n` +
         `${eligibleCount} proposal${eligibleCount === 1 ? '' : 's'} eligible at your saved policy ` +
         `(autopilot ${savedAutopilot.enabled ? 'enabled' : 'DISABLED'}, ` +
-        `confidence floor ${savedAutopilot.min_confidence.toFixed(2)}, ` +
-        `decisions: ${savedAutopilot.decisions.join(',')}).\n\n` +
+        `confidence floor ${savedAutopilot.min_confidence.toFixed(2)}).\n\n` +
         `Each eligible vote will be signed by the TEE wallet and posted to Snapshot mainnet. ` +
         `Public, permanent record per vote.`,
     );
@@ -200,10 +198,9 @@ export function AutopilotRunCard({
       <p className="muted tiny" style={{ marginTop: 6 }}>
         Reads your saved policy autopilot block (currently{' '}
         <strong>{savedAutopilot.enabled ? 'enabled' : 'disabled'}</strong> at{' '}
-        <code>{savedAutopilot.min_confidence.toFixed(2)}</code> confidence,{' '}
-        <code>{savedAutopilot.decisions.join(',') || '(none)'}</code>), scans active proposals
-        across your allowlisted spaces, applies the eligibility predicate, and either previews
-        the plan (dry-run) or signs + submits eligible votes sequentially.
+        <code>{savedAutopilot.min_confidence.toFixed(2)}</code> confidence floor), scans
+        active proposals across your allowlisted spaces, applies the eligibility predicate,
+        and either previews the plan (dry-run) or signs + submits eligible votes sequentially.
       </p>
 
       <div className="sv-buttons" style={{ marginTop: 14 }}>
