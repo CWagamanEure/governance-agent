@@ -19,7 +19,6 @@ import {
 } from './lib/auth';
 import { Landing } from './Landing';
 import { WalletButton } from './WalletButton';
-import { DaoPicker } from './DaoPicker';
 import { Activity } from './pages/Activity';
 import { Proposals } from './pages/Proposals';
 import { Policy } from './pages/Policy';
@@ -464,9 +463,6 @@ function TopBar({
           <a href="#/" className="brand-link">
             Governance Agent
           </a>
-          {info?.env?.DAO_SPACE_PUBLIC && (
-            <DaoPicker selected={info.env.DAO_SPACE_PUBLIC} />
-          )}
         </div>
 
         <nav className="dash-tabs">
