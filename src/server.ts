@@ -1683,6 +1683,18 @@ app.post(
     // For the rest, we mutate the in-memory proposal record to use the
     // hub's body / title / space — downstream extraction and submit
     // signing both read from this trusted copy.
+    //
+    // Defense-in-depth: also filter by the user's followed_spaces. The
+    // frontend already does this client-side in AutopilotRunCard, but a
+    // direct API caller could still POST proposals from a non-followed
+    // space. The deploy allowlist remains the outer gate at submission
+    // time; followed_spaces is an inner per-user gate that exists so a
+    // misconfigured client can never spend autopilot LLM budget on
+    // DAOs the user did not opt into.
+    const followedSet = new Set<string>(
+      Array.isArray(profile.followed_spaces) ? profile.followed_spaces : [],
+    );
+    const followedFilterActive = followedSet.size > 0;
     const verificationFailures: PlanItem[] = [];
     const verifiedProposals: SnapshotProposalRaw[] = [];
     for (const p of proposals) {
@@ -1710,6 +1722,18 @@ app.post(
           confidence: null,
           eligible: false,
           reason: `proposal_space_mismatch: caller_said_${claimedSpace}_hub_says_${actualSpace}`,
+        });
+        continue;
+      }
+      if (followedFilterActive && !followedSet.has(actualSpace)) {
+        verificationFailures.push({
+          proposal_id: p.id,
+          title: v.title,
+          space: actualSpace,
+          decision: null,
+          confidence: null,
+          eligible: false,
+          reason: `space_not_followed: ${actualSpace}`,
         });
         continue;
       }

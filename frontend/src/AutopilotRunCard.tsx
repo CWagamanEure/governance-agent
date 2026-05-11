@@ -57,18 +57,31 @@ export function AutopilotRunCard({
 
   /**
    * Build the proposal candidate list:
-   *   - Live-active proposals from primary + every fallback space (the only
-   *     ones Snapshot would actually accept a vote for).
+   *   - Live-active proposals from spaces the USER follows (intersect with
+   *     the deploy allowlist as the outer security gate).
    *   - The cached corpus (closed but in our extraction store) so the dry-run
    *     plan shows eligibility verdicts the operator recognizes from ACT 2.
    * We deduplicate by proposal id; live-active wins so the raw object is
    * the authoritative one.
    */
   async function gatherProposals(): Promise<any[]> {
-    const spacesToScan = [
+    // Deploy allowlist (outer security gate). Submission is hard-rejected
+    // by the backend for any space outside this set, so there is no point
+    // scanning beyond it even if the user's profile somehow lists more.
+    const allowlistedSpaces = [
       ...(daoSpace ? [daoSpace] : []),
       ...fallbackSpaces.filter((s) => s !== daoSpace),
     ];
+    // User's explicit follow list. Empty = nothing followed (B2 backfills
+    // the full allowlist into legacy empty profiles on editor-open, so an
+    // empty list at runtime represents a deliberate user choice to follow
+    // nothing). Intersect with the allowlist so a stale follow entry for
+    // a removed DAO is silently ignored.
+    const userFollowed = Array.isArray(profile.profile_json?.followed_spaces)
+      ? (profile.profile_json.followed_spaces as string[])
+      : [];
+    const followedSet = new Set(userFollowed);
+    const spacesToScan = allowlistedSpaces.filter((s) => followedSet.has(s));
     const activeIdsBySpace = await Promise.all(
       spacesToScan.map((space) =>
         fetchActiveProposals(space, 8)
@@ -108,11 +121,21 @@ export function AutopilotRunCard({
     setStep('previewing');
     const myRun = runIdRef.current;
     try {
+      const followed = Array.isArray(profile.profile_json?.followed_spaces)
+        ? (profile.profile_json.followed_spaces as string[])
+        : [];
+      if (followed.length === 0) {
+        setError(
+          'You are not following any DAOs. Open the policy editor and pick which DAOs autopilot should watch.',
+        );
+        setStep('error');
+        return;
+      }
       const proposals = await gatherProposals();
       if (runIdRef.current !== myRun) return;
       if (proposals.length === 0) {
         setError(
-          'No proposals available to preview. Snapshot returned nothing active and the cache is empty.',
+          'No proposals available to preview. Snapshot returned nothing active in your followed DAOs and the cache is empty.',
         );
         setStep('error');
         return;
