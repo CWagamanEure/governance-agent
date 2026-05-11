@@ -31,7 +31,6 @@ import {
   verifyEnvelope,
   submitVote,
   decisionToChoice,
-  verifyProposalsByIds,
   APP_NAME as SNAPSHOT_APP_NAME,
   type SignedVoteEnvelope,
 } from './snapshot.js';
@@ -41,7 +40,6 @@ import {
   PolicyProfile as PolicyProfileSchema,
   compileProfileToRules,
   evaluate as evaluatePolicy,
-  isAutopilotEligible,
   normalizeProfile as normalizeProfileFn,
   type AnalysisForPolicy,
   type PolicyProfileT,
@@ -54,9 +52,9 @@ import {
   listAudit,
   appendAudit,
   listCachedAnalyses,
-  getCachedAnalysis,
   resetUserData,
   resetAndSeedUserData,
+  listAutopilotEnabledUsers,
 } from './db.js';
 import {
   generateNonce,
@@ -74,6 +72,7 @@ import { compileProfile } from './profile-compiler.js';
 import { buildAttestationReport } from './attestation.js';
 import { DEMO_PROFILE } from './demo-profile.js';
 import { startAutopilotPoller, stopAutopilotPoller } from './cron.js';
+import { runAutopilotBatch } from './autopilot.js';
 import {
   hashJson,
   DECISION_BLOB_DOMAIN,
@@ -1636,411 +1635,40 @@ app.post(
         400,
       );
     }
-    const effectiveAutopilot = dryRun
-      ? { ...policy.autopilot, enabled: true }
-      : policy.autopilot;
 
-    // Verify every proposal against Snapshot's public hub before we
-    // spend LLM tokens or sign anything. Without this gate, a caller
-    // could pass fabricated proposals with attacker-controlled bodies
-    // and claimed-but-fake space metadata — the agent would happily
-    // extract on the body (LLM cost) and try to submit (rejected by
-    // Snapshot but the request still goes out under the operator's
-    // identity). After verification we OVERWRITE caller-supplied body
-    // and space with the authoritative copy from the hub. The hub
-    // lookup is a single batched query (50 ids per call).
-    let verifiedById: Map<string, import('./snapshot.js').VerifiedProposal>;
-    try {
-      verifiedById = await verifyProposalsByIds(proposals.map((p) => p.id));
-    } catch (e) {
-      return c.json(
-        {
-          error: 'snapshot_verification_failed',
-          message: e instanceof Error ? e.message : String(e),
-        },
-        502,
-      );
-    }
-
-    type PlanItem = {
-      proposal_id: string;
-      title: string | null;
-      space: string | null;
-      decision: 'FOR' | 'AGAINST' | 'ABSTAIN' | 'MANUAL_REVIEW' | null;
-      confidence: number | null;
-      eligible: boolean;
-      reason?: string;
-      // 'cache' | 'live' | 'none' — surfaces whether autopilot used a
-      // pre-existing extraction or had to run the LLM live for this item.
-      // Useful for cost reporting and for proving in the audit log that
-      // the system extracted a brand-new proposal on its own initiative.
-      extraction_source?: string;
-      submitted?: { ok: boolean; snapshot_url?: string; error?: string };
-    };
-
-    // Pre-filter: any proposal not on the hub becomes not-eligible with
-    // proposal_not_found. Any proposal whose caller-claimed space does
-    // not match the hub becomes not-eligible with proposal_space_mismatch.
-    // For the rest, we mutate the in-memory proposal record to use the
-    // hub's body / title / space — downstream extraction and submit
-    // signing both read from this trusted copy.
-    //
-    // Defense-in-depth: also filter by the user's followed_spaces. The
-    // frontend already does this client-side in AutopilotRunCard, but a
-    // direct API caller could still POST proposals from a non-followed
-    // space. The deploy allowlist remains the outer gate at submission
-    // time; followed_spaces is an inner per-user gate that exists so a
-    // misconfigured client can never spend autopilot LLM budget on
-    // DAOs the user did not opt into.
-    const followedSet = new Set<string>(
-      Array.isArray(profile.followed_spaces) ? profile.followed_spaces : [],
-    );
-    const followedFilterActive = followedSet.size > 0;
-    const verificationFailures: PlanItem[] = [];
-    const verifiedProposals: SnapshotProposalRaw[] = [];
-    for (const p of proposals) {
-      const v = verifiedById.get(p.id.toLowerCase());
-      if (!v) {
-        verificationFailures.push({
-          proposal_id: p.id,
-          title: p.title ?? null,
-          space: p.space?.id ?? null,
-          decision: null,
-          confidence: null,
-          eligible: false,
-          reason: 'proposal_not_found_on_snapshot',
-        });
-        continue;
-      }
-      const claimedSpace = (p.space?.id ?? '').toLowerCase();
-      const actualSpace = v.space.id.toLowerCase();
-      if (claimedSpace && claimedSpace !== actualSpace) {
-        verificationFailures.push({
-          proposal_id: p.id,
-          title: v.title,
-          space: actualSpace,
-          decision: null,
-          confidence: null,
-          eligible: false,
-          reason: `proposal_space_mismatch: caller_said_${claimedSpace}_hub_says_${actualSpace}`,
-        });
-        continue;
-      }
-      if (followedFilterActive && !followedSet.has(actualSpace)) {
-        verificationFailures.push({
-          proposal_id: p.id,
-          title: v.title,
-          space: actualSpace,
-          decision: null,
-          confidence: null,
-          eligible: false,
-          reason: `space_not_followed: ${actualSpace}`,
-        });
-        continue;
-      }
-      // Replace caller-supplied fields with the hub's authoritative copy.
-      verifiedProposals.push({
-        id: v.id,
-        title: v.title,
-        body: v.body,
-        author: v.author,
-        type: v.type,
-        choices: v.choices,
-        start: v.start,
-        end: v.end,
-        state: v.state,
-        space: { id: v.space.id },
-      });
-    }
-    // From here on, work only with verifiedProposals. The original
-    // `proposals` array is no longer trusted; verificationFailures
-    // gets folded into the final plan after the plan-phase fan-out.
-
-    // Plan phase setup: split verified proposals into cache-hits (free)
-    // and cache-misses (each triggers one live LLM call). We pay the live
-    // cost only up to liveExtractionBudget items per batch; the rest pass
-    // through as not-eligible with a clear reason so the operator sees
-    // them and a follow-up batch can drain them. allowLive=false on a
-    // pre-classified miss makes runPipeline skip the LLM call.
-    const allowLive: boolean[] = new Array(verifiedProposals.length).fill(true);
-    let liveSlotsRemaining = liveExtractionBudget;
-    for (let i = 0; i < verifiedProposals.length; i++) {
-      const hasCache = getCachedAnalysis(verifiedProposals[i].id, EXTRACTION_SCHEMA_VERSION) !== null;
-      if (hasCache) continue;
-      if (liveSlotsRemaining > 0) {
-        liveSlotsRemaining -= 1;
-      } else {
-        allowLive[i] = false;
-      }
-    }
-
-    // Plan phase fan-out: each item runs through runPipeline behind a
-    // per-item timeout race. runPipeline uses the cache when available
-    // and otherwise calls the LLM live inside the TEE. allowLive=false
-    // skips the LLM call entirely (budget exhausted). Per-item failures
-    // and timeouts are isolated — they produce a single not-eligible row
-    // instead of crashing the batch.
-    const settled = await Promise.allSettled(
-      verifiedProposals.map(async (p, i) => {
-        const space = p.space?.id ?? null;
-        // Budget-exceeded items: do not call the LLM. Cache hit still
-        // works because runPipeline falls through to live only after
-        // checking the cache; we short-circuit before that to surface a
-        // clearer reason.
-        if (!allowLive[i]) {
-          return {
-            proposal_id: p.id,
-            title: p.title ?? null,
-            space,
-            decision: null,
-            confidence: null,
-            eligible: false,
-            reason: 'live_extraction_budget_exceeded',
-            extraction_source: 'none',
-          } satisfies PlanItem;
-        }
-        // Per-item timeout. Math.race against a rejection so a hung LLM
-        // call cannot stall the whole batch. The rejection bubbles to
-        // Promise.allSettled and we surface a typed reason below.
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const timeout = new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error(`extraction_timeout_${extractionTimeoutMs}ms`)),
-            extractionTimeoutMs,
-          );
-        });
-        let result;
-        try {
-          result = await Promise.race([
-            runPipeline({ proposal: p, profile: policy }),
-            timeout,
-          ]);
-        } finally {
-          if (timer) clearTimeout(timer);
-        }
-        if (!result.evaluation || !result.analysis) {
-          return {
-            proposal_id: p.id,
-            title: p.title ?? null,
-            space,
-            decision: null,
-            confidence: null,
-            eligible: false,
-            reason: result.extraction_error
-              ? `extraction_failed: ${result.extraction_error}`
-              : 'no_extraction',
-            extraction_source: result.extraction.source,
-          } satisfies PlanItem;
-        }
-        const evaluation = result.evaluation;
-        const eligible = isAutopilotEligible(evaluation, effectiveAutopilot);
-        let reason: string | undefined;
-        if (!eligible) {
-          if (evaluation.decision === 'MANUAL_REVIEW') reason = 'decision_manual_review';
-          else if (evaluation.confidence < effectiveAutopilot.min_confidence) reason = 'below_confidence_floor';
-          else reason = 'autopilot_disabled';
-        }
-        // Audit log entry for proposals the agent extracted on its own
-        // initiative (live LLM call inside the TEE). Cache hits don't
-        // get logged here because they don't represent autonomous work
-        // by the agent; budget-skipped items don't either since no
-        // extraction happened. The audit chain proves later: "the
-        // system saw this proposal, paid for the extraction, and
-        // produced this score under this policy hash."
-        if (result.extraction.source === 'live') {
-          appendAudit({
-            event_type: 'autopilot_extracted_proposal',
-            user_id: user.id,
-            ref_id: p.id,
-            payload: {
-              space,
-              title: p.title ?? null,
-              decision: evaluation.decision,
-              confidence: evaluation.confidence,
-              eligible,
-              dry_run: dryRun,
-              policy_hash: stored.hash,
-              extraction_route: result.extraction.route,
-              extraction_model: result.extraction.modelId,
-            },
-          });
-        }
-        return {
-          proposal_id: p.id,
-          title: p.title ?? null,
-          space,
-          decision: evaluation.decision,
-          confidence: evaluation.confidence,
-          eligible,
-          reason,
-          extraction_source: result.extraction.source,
-        } satisfies PlanItem;
-      }),
-    );
-    const fanoutPlan: PlanItem[] = settled.map((s, i) => {
-      if (s.status === 'fulfilled') return s.value;
-      const p = verifiedProposals[i];
-      const errMsg = s.reason instanceof Error ? s.reason.message : String(s.reason);
-      const isTimeout = errMsg.startsWith('extraction_timeout_');
-      return {
-        proposal_id: p.id,
-        title: p.title ?? null,
-        space: p.space?.id ?? null,
-        decision: null,
-        confidence: null,
-        eligible: false,
-        reason: isTimeout ? `extraction_timeout: ${errMsg}` : `pipeline_error: ${errMsg}`,
-      };
+    const batch = await runAutopilotBatch({
+      userId: user.id,
+      userAddress: address,
+      profile,
+      rules,
+      policyHash: stored.hash,
+      proposals,
+      dryRun,
+      maxVotes,
+      extractionTimeoutMs,
+      liveExtractionBudget,
+      acctFactory: () => userWallet(address as `0x${string}`),
+      source: 'http',
+      isSpaceAllowedForSubmit,
+      auditVoteSubmission,
     });
-    // Fold verification failures back in so the response reflects every
-    // proposal the caller submitted, in original order.
-    const plan: PlanItem[] = [...verificationFailures, ...fanoutPlan];
-
-    if (dryRun) {
-      const eligibleCount = plan.filter((p) => p.eligible).length;
-      return c.json({
-        policy_hash: stored.hash,
-        autopilot: policy.autopilot,
-        plan,
-        dry_run: true,
-        submitted_count: 0,
-        capped: eligibleCount > maxVotes,
-      });
+    if (batch.fatal) {
+      const status =
+        batch.fatal.code === 'snapshot_verification_failed' ? 502 :
+        batch.fatal.code === 'wallet_unavailable' ? 503 : 500;
+      return c.json({ error: batch.fatal.code, message: batch.fatal.message }, status);
     }
-
-    // Live submit path. Sign + submit eligible items sequentially with a
-    // 500ms inter-vote delay so a 10-vote batch does not look like a spike
-    // to Snapshot's sequencer. Stop at maxVotes and mark capped if we did.
-    const eligible = plan.filter((p) => p.eligible);
-    const willSubmit = eligible.slice(0, maxVotes);
-    const capped = eligible.length > maxVotes;
-    // userWallet throws synchronously if MNEMONIC is missing. Catching here
-    // means a misconfigured deploy returns a clean 503 instead of crashing
-    // mid-batch with a stack trace in the body.
-    let acct;
-    try {
-      acct = userWallet(address as `0x${string}`);
-    } catch (e) {
-      return c.json(
-        {
-          error: 'wallet_unavailable',
-          message: e instanceof Error ? e.message : String(e),
-        },
-        503,
-      );
-    }
-    const userIdForAudit = user.id;
-    let submittedCount = 0;
-
-    for (let i = 0; i < willSubmit.length; i++) {
-      const item = willSubmit[i];
-      // Look up the verified proposal record (hub-authoritative body and
-      // metadata) rather than the caller-supplied one. verificationFailures
-      // were already filtered out before the plan phase, so an eligible
-      // item is guaranteed to have a verified entry.
-      const original = verifiedProposals.find((p) => p.id === item.proposal_id)!;
-      // Re-grab cached for this proposal. Normally guaranteed to exist —
-      // plan phase wrote through after a live extraction — but pipeline.ts
-      // swallows cache-write failures (intentional: a write failure should
-      // not poison the pipeline response). If the write silently failed,
-      // the cache lookup here returns null. Defensive: mark the item as
-      // submission-skipped with a clear reason instead of crashing the
-      // whole endpoint via a non-null-assertion + null.analysis_json
-      // TypeError that escapes the per-item try block below.
-      const cached = getCachedAnalysis(item.proposal_id, EXTRACTION_SCHEMA_VERSION);
-      if (!cached) {
-        item.submitted = {
-          ok: false,
-          error: 'cache_lookup_failed_post_extraction',
-        };
-        continue;
-      }
-      const analysis = JSON.parse(cached.analysis_json) as AnalysisForPolicy;
-      analysis.extraction_confidence = cached.extraction_confidence;
-      const evaluation = evaluatePolicy(analysis, policy, rules, {
-        id: item.proposal_id,
-        author_address: original.author,
-        space: item.space ?? undefined,
-      });
-      const choice = decisionToChoice(evaluation.decision);
-      if (choice === null) {
-        // Should never happen — eligibility already filters MANUAL_REVIEW.
-        item.submitted = { ok: false, error: 'no choice mapping for decision' };
-        continue;
-      }
-
-      // Allowlist gate per-proposal — defense-in-depth even though the
-      // frontend constrains the dropdown to allowed spaces.
-      const targetSpace = item.space ?? '';
-      if (!isSpaceAllowedForSubmit(targetSpace)) {
-        item.submitted = { ok: false, error: `space_not_allowed: ${targetSpace}` };
-        continue;
-      }
-
-      try {
-        // Sign decision blob first so the audit chain is complete even on
-        // submit failure.
-        await signDecisionBlob({
-          account: acct,
-          userAddress: address as `0x${string}`,
-          proposal: original,
-          policy,
-          rules,
-          analysis,
-          evaluation,
-          choice,
-          pipelineVersion: 'autopilot-1',
-        });
-
-        const envelope = await signVote({
-          account: acct,
-          space: targetSpace,
-          proposalId: item.proposal_id as `0x${string}`,
-          choice,
-          reason: `gov-agent autopilot v0.1: ${evaluation.decision} (engine ${evaluation.engine_version}, confidence ${evaluation.confidence.toFixed(2)})`,
-        });
-
-        const result = await submitVote(envelope);
-        auditVoteSubmission({
-          user_id: userIdForAudit,
-          space: targetSpace,
-          proposal: item.proposal_id,
-          choice,
-          from: envelope.address,
-          result,
-        });
-        if (result.ok) {
-          item.submitted = {
-            ok: true,
-            snapshot_url: `https://snapshot.org/#/${targetSpace}/proposal/${item.proposal_id}`,
-          };
-          submittedCount += 1;
-        } else {
-          item.submitted = { ok: false, error: result.error };
-        }
-      } catch (e) {
-        item.submitted = {
-          ok: false,
-          error: e instanceof Error ? e.message : String(e),
-        };
-      }
-
-      // Sleep between submissions; skip after the last one.
-      if (i < willSubmit.length - 1) {
-        await new Promise((r) => setTimeout(r, 500));
-      }
-    }
-
     return c.json({
       policy_hash: stored.hash,
       autopilot: policy.autopilot,
-      plan,
-      dry_run: false,
-      submitted_count: submittedCount,
-      capped,
+      plan: batch.plan,
+      dry_run: dryRun,
+      submitted_count: batch.submitted_count,
+      capped: batch.capped,
     });
   },
 );
+
 
 app.get('/attestation', async (c) => {
   let walletAddress: string | null = null;

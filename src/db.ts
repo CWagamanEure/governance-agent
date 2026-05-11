@@ -345,6 +345,47 @@ export function getLatestProfile(user_id: string): ProfileRow | null {
   return row ?? null;
 }
 
+/**
+ * List every user whose latest saved profile has autopilot.enabled = true.
+ * Consumed by the background poller (src/cron.ts) so it can iterate
+ * only the users who actually opted in.
+ *
+ * Returns the user row plus their latest profile row, joined. Implemented
+ * as a SQL JOIN on the latest version-per-user via window function to
+ * avoid an N+1 over getLatestProfile.
+ *
+ * Filtering by `autopilot.enabled = true` happens in SQL via json_extract
+ * so a user whose policy lacks the field (legacy) is not returned. SQLite
+ * has json_extract built in since 3.38; better-sqlite3 ships with a recent
+ * build.
+ */
+const autopilotEnabledUsers = db.prepare(`
+  WITH latest AS (
+    SELECT
+      p.*,
+      ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY version DESC) AS rn
+    FROM policy_profiles p
+  )
+  SELECT u.id AS user_id, u.eth_address, l.id AS profile_id, l.version, l.profile_json, l.rules_json, l.hash
+  FROM users u
+  JOIN latest l ON l.user_id = u.id AND l.rn = 1
+  WHERE json_extract(l.profile_json, '$.autopilot.enabled') = 1
+`);
+
+export type AutopilotEnabledUserRow = {
+  user_id: string;
+  eth_address: string;
+  profile_id: string;
+  version: number;
+  profile_json: string;
+  rules_json: string;
+  hash: string;
+};
+
+export function listAutopilotEnabledUsers(): AutopilotEnabledUserRow[] {
+  return autopilotEnabledUsers.all() as AutopilotEnabledUserRow[];
+}
+
 export function saveProfile(args: {
   user_id: string;
   profile: unknown;
