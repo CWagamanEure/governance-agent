@@ -16,7 +16,18 @@
  * dedup (C3), and the status surface (C4) consumes lastTickStatus().
  */
 
-import { appendAudit } from './db.js';
+import { appendAudit, listAutopilotEnabledUsers } from './db.js';
+import {
+  PolicyProfile as PolicyProfileSchema,
+  compileProfileToRules,
+  normalizeProfile,
+  type PolicyProfileT,
+} from './policy.js';
+import { fetchActiveProposalIdsInSpaces } from './snapshot.js';
+import { userWallet } from './wallets.js';
+import { runAutopilotBatch, auditVoteSubmission } from './autopilot.js';
+import { getSubmitAllowlist, isSpaceAllowedForSubmit } from './submit-allowlist.js';
+import type { SnapshotProposalRaw } from './pipeline.js';
 
 export type PollTickStatus = {
   startedAt: number;
@@ -80,13 +91,114 @@ async function runPollTick(): Promise<void> {
   };
   try {
     state.ticks += 1;
-    // C2 will iterate users here. For now, the skeleton just logs and
-    // records the tick. We deliberately do NOT touch any user state in
-    // this commit so we can verify the timer mechanics in isolation.
     console.log(`[cron] tick #${state.ticks} at ${new Date(tick.startedAt).toISOString()}`);
+
+    // Outer security gate. If the deploy has no allowlisted spaces,
+    // there is nothing autopilot could legally submit to — skip work.
+    const allowlist = getSubmitAllowlist();
+    if (allowlist.length === 0) {
+      console.warn('[cron] no SUBMIT_ALLOWLIST configured; tick is a no-op');
+      appendAudit({
+        event_type: 'autopilot_poll_tick',
+        payload: { tick_number: state.ticks, skipped: 'no_allowlist' },
+      });
+      return;
+    }
+
+    // Step 1: who is opted in?
+    const users = listAutopilotEnabledUsers();
+    tick.userCount = users.length;
+    if (users.length === 0) {
+      appendAudit({
+        event_type: 'autopilot_poll_tick',
+        payload: { tick_number: state.ticks, user_count: 0 },
+      });
+      return;
+    }
+
+    // Step 2: for each user, intersect their followed_spaces with the
+    // deploy allowlist, fetch active proposal ids in those spaces,
+    // and run the autopilot batch. We do users sequentially so the
+    // LLM-extraction load is predictable (no fan-out across users).
+    for (const userRow of users) {
+      let profile: PolicyProfileT;
+      try {
+        const raw = JSON.parse(userRow.profile_json);
+        const parsed = PolicyProfileSchema.safeParse(raw);
+        profile = parsed.success ? parsed.data : normalizeProfile(raw);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        tick.errors.push({ user_id: userRow.user_id, message: `profile_parse_failed: ${message}` });
+        continue;
+      }
+      const followed = Array.isArray(profile.followed_spaces) ? profile.followed_spaces : [];
+      const scanSpaces = followed.filter((s) => allowlist.includes(s));
+      if (scanSpaces.length === 0) continue; // nothing to do for this user
+
+      let activeItems: Array<{ id: string; space: string }>;
+      try {
+        activeItems = await fetchActiveProposalIdsInSpaces(scanSpaces, 10);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        tick.errors.push({ user_id: userRow.user_id, message: `snapshot_active_fetch_failed: ${message}` });
+        continue;
+      }
+      if (activeItems.length === 0) continue;
+
+      // Minimal SnapshotProposalRaw — runAutopilotBatch will replace
+      // body/title/etc with the hub-authoritative copy during its
+      // own verifyProposalsByIds pass.
+      const proposals: SnapshotProposalRaw[] = activeItems.map((p) => ({
+        id: p.id,
+        space: { id: p.space },
+      }));
+
+      let rules;
+      try {
+        rules = compileProfileToRules(profile);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        tick.errors.push({ user_id: userRow.user_id, message: `rules_compile_failed: ${message}` });
+        continue;
+      }
+
+      const result = await runAutopilotBatch({
+        userId: userRow.user_id,
+        userAddress: userRow.eth_address,
+        profile,
+        rules,
+        policyHash: userRow.hash,
+        proposals,
+        dryRun: false,
+        // Conservative caps for unattended runs — we are not at the
+        // editor's elbow to recover from a runaway tick.
+        maxVotes: 5,
+        extractionTimeoutMs: 20_000,
+        liveExtractionBudget: 5,
+        acctFactory: () => userWallet(userRow.eth_address as `0x${string}`),
+        source: 'cron',
+        isSpaceAllowedForSubmit,
+        auditVoteSubmission,
+      });
+      if (result.fatal) {
+        tick.errors.push({ user_id: userRow.user_id, message: `${result.fatal.code}: ${result.fatal.message}` });
+        continue;
+      }
+      tick.itemsScored += result.plan.filter(
+        (p) => p.decision !== null,
+      ).length;
+      tick.itemsSubmitted += result.submitted_count;
+    }
+
     appendAudit({
       event_type: 'autopilot_poll_tick',
-      payload: { tick_number: state.ticks, interval_ms: state.intervalMs },
+      payload: {
+        tick_number: state.ticks,
+        user_count: tick.userCount,
+        items_scored: tick.itemsScored,
+        items_submitted: tick.itemsSubmitted,
+        error_count: tick.errors.length,
+      },
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);

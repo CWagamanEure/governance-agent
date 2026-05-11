@@ -84,6 +84,47 @@ const VERIFY_QUERY = `query Verify($ids: [String!]!) {
 }`;
 
 /**
+ * Lightweight: fetch active proposal ids across N spaces in a single
+ * GraphQL call. The cron poller uses this to figure out what to scan
+ * each tick; runAutopilotBatch then does the full hub verification +
+ * body fetch via verifyProposalsByIds. Cheap because the response
+ * only carries id + space.
+ */
+const ACTIVE_IDS_QUERY = `query Active($spaces: [String!]!, $first: Int!) {
+  proposals(first: $first, where: { space_in: $spaces, state: "active" }, orderBy: "end", orderDirection: asc) {
+    id
+    space { id }
+  }
+}`;
+
+export async function fetchActiveProposalIdsInSpaces(
+  spaces: string[],
+  perSpaceCap: number = 10,
+): Promise<Array<{ id: string; space: string }>> {
+  if (spaces.length === 0) return [];
+  // first limit on the GraphQL side scales with space count; we cap
+  // overall return at perSpaceCap × spaces.length to keep responses
+  // small even if Snapshot returns more.
+  const totalCap = perSpaceCap * spaces.length;
+  const r = await fetch(SNAPSHOT_HUB_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      query: ACTIVE_IDS_QUERY,
+      variables: { spaces, first: totalCap },
+    }),
+  });
+  if (!r.ok) {
+    throw new Error(`snapshot hub returned ${r.status}: ${await r.text()}`);
+  }
+  const json = (await r.json()) as {
+    data?: { proposals?: Array<{ id: string; space: { id: string } }> };
+  };
+  const proposals = json.data?.proposals ?? [];
+  return proposals.map((p) => ({ id: p.id, space: p.space.id }));
+}
+
+/**
  * Look up the given proposal ids on Snapshot's public hub. Returns a Map
  * keyed by lowercased id → VerifiedProposal. Ids not present in the
  * response (typos, fabricated ids, archived proposals) are simply

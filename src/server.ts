@@ -72,7 +72,8 @@ import { compileProfile } from './profile-compiler.js';
 import { buildAttestationReport } from './attestation.js';
 import { DEMO_PROFILE } from './demo-profile.js';
 import { startAutopilotPoller, stopAutopilotPoller } from './cron.js';
-import { runAutopilotBatch } from './autopilot.js';
+import { runAutopilotBatch, auditVoteSubmission } from './autopilot.js';
+import { getSubmitAllowlist, isSpaceAllowedForSubmit } from './submit-allowlist.js';
 import {
   hashJson,
   DECISION_BLOB_DOMAIN,
@@ -1234,46 +1235,8 @@ app.post('/vote/submit', async (c) => {
   });
 });
 
-// Snapshot space ids are case-insensitive in the UI and Snapshot's GraphQL
-// always returns them lowercase, so we normalize everywhere we touch them.
-// Without this, an operator typo like SUBMIT_ALLOWLIST=ArbitrumFoundation.eth
-// would silently reject every submit even though the displayed allowlist
-// looks correct.
-function normalizeSpace(s: string): string {
-  return s.trim().toLowerCase();
-}
-
-function parseSpaceList(raw: string | undefined): string[] {
-  if (!raw) return [];
-  return raw.split(',').map(normalizeSpace).filter(Boolean);
-}
-
-function getSubmitAllowlist(): string[] {
-  // Three sources, all unioned so an operator can extend without overriding:
-  //   - SUBMIT_ALLOWLIST: explicit override (comma-separated)
-  //   - DAO_SPACE_PUBLIC: the primary DAO the demo is configured against
-  //   - SNAPSHOT_FALLBACK_SPACES_PUBLIC: spaces shown in the SignAndVerifyCard
-  //     active-proposal picker as fallback targets when the primary has none
-  const explicit = parseSpaceList(process.env.SUBMIT_ALLOWLIST);
-  const primary = process.env.DAO_SPACE_PUBLIC
-    ? [normalizeSpace(process.env.DAO_SPACE_PUBLIC)]
-    : [];
-  const fallback = parseSpaceList(process.env.SNAPSHOT_FALLBACK_SPACES_PUBLIC);
-  // Dedupe preserving primary-first ordering for nicer display.
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const s of [...primary, ...explicit, ...fallback]) {
-    if (!seen.has(s)) {
-      seen.add(s);
-      out.push(s);
-    }
-  }
-  return out;
-}
-
-function isSpaceAllowedForSubmit(space: string): boolean {
-  return getSubmitAllowlist().includes(normalizeSpace(space));
-}
+// Snapshot-space allowlist moved to src/submit-allowlist.ts so cron.ts
+// can import it without depending on the whole server module.
 
 /**
  * Append a VOTE_SUBMITTED row to the audit log. Called from every code path
@@ -1281,28 +1244,8 @@ function isSpaceAllowedForSubmit(space: string): boolean {
  * of three submit paths (/vote/sign, /pipeline/run) would leave no audit
  * trail and the trust narrative ("every vote audited") would be a half-truth.
  */
-function auditVoteSubmission(args: {
-  user_id: string;
-  space: string;
-  proposal: string;
-  choice: number;
-  from: string;
-  result: { ok: true; receipt: unknown } | { ok: false; status: number; error: string };
-}) {
-  appendAudit({
-    event_type: 'VOTE_SUBMITTED',
-    user_id: args.user_id,
-    payload: {
-      space: args.space,
-      proposal: args.proposal,
-      choice: args.choice,
-      from: args.from,
-      ok: args.result.ok,
-      receipt: args.result.ok ? args.result.receipt : undefined,
-      error: args.result.ok ? undefined : args.result.error,
-    },
-  });
-}
+// auditVoteSubmission moved to src/autopilot.ts so the cron poller can
+// share it without duplicating the audit-event shape.
 
 /**
  * GET /submit-allowlist

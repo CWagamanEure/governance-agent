@@ -41,11 +41,6 @@ import {
   getCachedAnalysis,
 } from './db.js';
 
-/**
- * Mirrors the signature of server.ts's auditVoteSubmission. Defined
- * locally here to avoid a circular import; the HTTP layer passes the
- * actual helper in via AutopilotBatchArgs.auditVoteSubmission.
- */
 export type SubmitAuditInput = {
   user_id: string;
   space: string;
@@ -54,6 +49,31 @@ export type SubmitAuditInput = {
   from: string;
   result: { ok: true; receipt: unknown } | { ok: false; status: number; error: string };
 };
+
+/**
+ * Shared vote-submission audit helper. Both the HTTP autopilot endpoint
+ * and the cron poller call this, so a Snapshot submit triggered by
+ * /pipeline/run, /vote/submit, /pipeline/autopilot-run, OR the
+ * background poller all land on the same audit chain with the same
+ * event_type. Without a single helper, one of the four submit paths
+ * would leave no audit trail and "every vote audited" would be a half-
+ * truth.
+ */
+export function auditVoteSubmission(args: SubmitAuditInput): void {
+  appendAudit({
+    event_type: 'VOTE_SUBMITTED',
+    user_id: args.user_id,
+    payload: {
+      space: args.space,
+      proposal: args.proposal,
+      choice: args.choice,
+      from: args.from,
+      ok: args.result.ok,
+      receipt: args.result.ok ? args.result.receipt : undefined,
+      error: args.result.ok ? undefined : args.result.error,
+    },
+  });
+}
 import { EXTRACTION_SCHEMA_VERSION } from './llm.js';
 
 // Re-exported for callers (server.ts, cron.ts).
