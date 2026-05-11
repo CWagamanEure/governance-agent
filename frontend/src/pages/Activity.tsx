@@ -171,7 +171,7 @@ function ActivityAuthed({
   // Live-fetch active proposals across primary + every fallback space,
   // then run the pipeline against each in parallel. Multi-DAO surface:
   // pending queue shows whatever your policy is currently flagging across
-  // ALL allowlisted DAOs, with a DaoBadge per row. No FEATURED fakes.
+  // ALL allowlisted DAOs, with a DaoBadge per row.
   useEffect(() => {
     let cancelled = false;
     (async () => {

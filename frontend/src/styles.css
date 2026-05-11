@@ -1495,36 +1495,6 @@ input[type="range"] {
 /* Proposal cards */
 .proposals { display: flex; flex-direction: column; gap: 18px; }
 
-.demo-shortcuts {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin: -4px 0 16px;
-}
-.demo-shortcuts .dft-label { margin: 0 4px 0 0; }
-.demo-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  border-radius: 8px;
-  background: var(--bg-elev);
-  color: var(--fg-dim);
-  font-size: 12.5px;
-}
-.demo-chip code {
-  background: var(--bg-elev-2);
-  color: var(--fg-soft);
-  font-size: 10.5px;
-  padding: 1px 5px;
-}
-.demo-chip.active {
-  color: var(--fg);
-  border-color: rgba(98,184,255,0.35);
-  background: rgba(98,184,255,0.08);
-}
-
 .prop-card {
   background: var(--bg-elev);
   border: 1px solid var(--border);
