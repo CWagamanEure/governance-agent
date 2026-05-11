@@ -1,7 +1,8 @@
 # Demo Script — Governance Agent
 
-Rough flow. 5-7 minutes with the autopilot beat. The editor and the
-sign-verify-submit-autopilot chain do most of the work.
+Rough flow. 5-8 minutes with the autopilot beat and a brief policy-build
+opener. The editor and the sign-verify-submit-autopilot chain do most of
+the work.
 
 **Core message:** the user's policy is an editable, hashed, attestable
 contract. The TEE signs decisions against that contract. The user can
@@ -19,21 +20,28 @@ vote is traceable back to a specific saved policy version.
 - Cache populated at `EXTRACTION_SCHEMA_VERSION='1'`:
   - 28 real Arbitrum proposals (`space=arbitrumfoundation.eth`)
   - 20 calibration fixtures (`space=calibration.gov-agent`)
-- **CRITICAL: hit the demo-reset button before going on stage.** This wipes
-  the user's prior policy versions and seeds the deterministic
-  `DEMO_PROFILE` so ACT 2's four-step peel produces exactly 1 / 1 / 1 / 3
-  flips. Verify with:
+- **Before going on stage: click Reset (topbar, authed only).** Reset
+  now wipes votes + policy versions and returns you to onboarding — it
+  no longer silently seeds a hidden profile. The demo opens by walking
+  through the policy build itself using the **Use example values** and
+  **Use example calibration** shortcuts, which produce a deterministic
+  starter policy that ACT 2's four-step peel runs against.
+- Validate the canonical peel against the reference profile any time:
     ```bash
     npm run test:demo-peel
     ```
   Should print four ✓ lines and "Demo peel matches DEMO_SCRIPT.md ACT 2".
+  This validates the reference `DEMO_PROFILE` end-to-end; the
+  on-stage profile compiled from example values is a close
+  approximation but is allowed to drift slightly. If on-stage numbers
+  diverge, re-tune the example values rather than re-introducing the
+  hidden seed.
 
 ### Deploy checklist before the demo
 
 The deployed TEE image must be at the latest commit for ACT 5 to work.
-The seeded profile, `/decision/verify`, `/vote/submit`, AttestationCard,
-and the rebuilt SignAndVerifyCard all live in commits since the last
-deploy.
+The multi-DAO fan-out, the rewired Reset flow, the cleaned-up dashboard,
+and the editor diff grouping all live in commits since the last deploy.
 
 Add the fallback-DAO env var to `.env.deploy` (or wherever your
 deployment env is sourced):
@@ -131,7 +139,7 @@ Worth having a screen recording of (a) ready in either case.
 
 ---
 
-## ACT 1 — Pitch (30s)
+## ACT 1 — Pitch + build the policy (60s)
 
 > "Most AI agents say 'trust me' when they vote. We make that an editable
 > contract: write your values in plain language, the system compiles them
@@ -140,22 +148,40 @@ Worth having a screen recording of (a) ready in either case.
 > does vote, the wallet signs a content-addressed artifact you can replay
 > on commodity hardware to confirm the decision."
 
-Open the app on the Policy page. ProfileCard shows the seeded DEMO_PROFILE.
+Open the app on the Policy page. After Reset, the page is in onboarding
+mode — values box on the left, calibration set on the right.
 
-> "Versioned, content-addressed. Every signed decision references this hash."
+Click **"Use example values"**. The values box fills with four
+representative stances (public goods funding, recurring program
+accountability, irreversibility, parameter changes). Click
+**Continue to calibration**.
+
+Click **"Use example calibration"**. Eight calibration proposals
+preselect a FOR / AGAINST / ABSTAIN answer with a short reason. Click
+**Save policy**.
+
+The compile step runs (LLM if available, deterministic fallback
+otherwise). ProfileCard now shows version 1 of the freshly compiled
+policy with its content hash.
+
+> "Two minutes of inputs, hashed and versioned. Every signed decision
+> from now on references this exact hash."
 
 Click **"Edit rules"**.
 
 ## ACT 2 — Peel back the safety layers (2-3 min)
 
 The editor opens. Diff panel shows 48 cached proposals (28 real Arbitrum + 20
-onboarding calibration), zero flipped (draft equals baseline).
+onboarding calibration), zero flipped (draft equals baseline). The diff list
+is grouped into **Calibration set** and **Real proposals** sections so the
+two corpora are visually separated; each real-proposal row also carries a
+DaoBadge for which DAO it came from.
 
 > "48 past proposals. 28 real ones from Arbitrum DAO over the last few months.
 > 20 are the calibration set — clean cases the system uses to learn the
 > obvious patterns from your values."
 
-This act is the centerpiece. The seeded profile has stacked safety floors.
+This act is the centerpiece. The compiled profile has stacked safety floors.
 Each peel-back step shows one floor; the diff updates and the *binding rule
 id* on each diff item is visible inline. Reviewers can read the cause without
 hovering.
@@ -538,13 +564,16 @@ rule id on each diff item.
       above). Confirm `GIT_COMMIT_PUBLIC` matches `git rev-parse HEAD`.
 - [ ] `npm run test:demo-peel` prints 4 × ✓ and "Demo peel matches".
 - [ ] `npm run test:sign-verify` prints 6 × ✓ and "Sign-then-verify loop closed".
-- [ ] `npm run test:autopilot` prints 12 × ✓ "Summary: 12/12 passed".
+- [ ] `npm run test:autopilot` prints "Summary: 10/10 passed".
 - [ ] Frontend trust ribbon shows "Attested in EigenCompute TEE".
 - [ ] SIWE sign-in completed at least once before the demo.
-- [ ] Hit "Reset demo" once; confirm Policy page shows version 1 of seeded
-      DEMO_PROFILE; the Autopilot row in ProfileCard reads
+- [ ] Click **Reset** in the topbar once; confirm the Policy page lands
+      on onboarding (no saved profile). Walk through **Use example
+      values** → Continue → **Use example calibration** → Save. After
+      save, ProfileCard shows version 1 with autopilot
       "disabled · Confidence floor 0.85".
-- [ ] Editor first paint shows "48 past proposals" and zero flipped.
+- [ ] Editor first paint shows "48 past proposals" and zero flipped; the
+      diff list is grouped into "Calibration set" / "Real proposals".
 - [ ] AttestationCard renders Hardware/Code/Image/Measurement/Evidence rows.
 - [ ] Run sign-then-verify on stage hardware; confirm signature recovers
       and verify takes <100 ms.
@@ -552,8 +581,9 @@ rule id on each diff item.
       drag updates the "X of N" counter live.
 - [ ] Click "Preview autopilot batch" to confirm the AutopilotRunCard
       reaches the backend and renders a plan.
-- [ ] Check Snapshot for active arbitrumfoundation.eth proposals 30 min
-      before the demo so you know whether ACT 5c can fire.
+- [ ] Check Snapshot for active proposals across all four allowlisted
+      spaces (arbitrumfoundation, gitcoindao, gnosis, kleros) 30 min
+      before the demo so you know which branch ACT 5c will take.
 
 ## Cost spent
 
