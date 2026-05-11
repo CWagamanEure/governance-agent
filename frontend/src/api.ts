@@ -515,6 +515,27 @@ export type AutopilotRunResult = {
   capped: boolean;
 };
 
+export type PollerStatus = {
+  enabled: boolean;
+  intervalMs: number;
+  ticks: number;
+  inFlight: boolean;
+  lastTick: {
+    startedAt: number;
+    finishedAt: number | null;
+    userCount: number;
+    itemsScored: number;
+    itemsSubmitted: number;
+    errors: Array<{ user_id?: string; message: string }>;
+  } | null;
+};
+
+export async function getPollerStatus(): Promise<PollerStatus> {
+  const r = await fetch(`${BACKEND_URL}/poller/status`);
+  if (!r.ok) throw new Error(`poller status failed: ${r.status}`);
+  return r.json();
+}
+
 export async function runAutopilot(args: {
   token: string;
   proposals: any[];

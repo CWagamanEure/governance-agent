@@ -71,7 +71,7 @@ import { userWallet } from './wallets.js';
 import { compileProfile } from './profile-compiler.js';
 import { buildAttestationReport } from './attestation.js';
 import { DEMO_PROFILE } from './demo-profile.js';
-import { startAutopilotPoller, stopAutopilotPoller } from './cron.js';
+import { startAutopilotPoller, stopAutopilotPoller, pollerStatus } from './cron.js';
 import { runAutopilotBatch, auditVoteSubmission } from './autopilot.js';
 import { getSubmitAllowlist, isSpaceAllowedForSubmit } from './submit-allowlist.js';
 import {
@@ -1256,6 +1256,23 @@ app.post('/vote/submit', async (c) => {
  */
 app.get('/submit-allowlist', (c) => {
   return c.json({ spaces: getSubmitAllowlist() });
+});
+
+/**
+ * GET /poller/status
+ *
+ * Public snapshot of the background autopilot poller. Used by the
+ * Policy page to show "last polled at..." + per-tick counts so the
+ * user can see that the agent is running between manual interactions.
+ * Without this surface the cron is invisible — no UI indication
+ * differentiates "poller is off" from "poller is on but nothing
+ * cleared the floor."
+ *
+ * No auth: the status is operational metadata, not per-user data.
+ * Useful for ops scripts to confirm the poller actually started.
+ */
+app.get('/poller/status', (c) => {
+  return c.json(pollerStatus());
 });
 
 /**

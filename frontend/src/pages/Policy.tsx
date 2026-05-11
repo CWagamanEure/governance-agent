@@ -10,6 +10,7 @@ import { Onboarding } from '../Onboarding';
 import { PolicyEditor } from '../PolicyEditor';
 import { SignAndVerifyCard } from '../SignAndVerifyCard';
 import { AutopilotRunCard } from '../AutopilotRunCard';
+import { PollerStatusCard } from '../PollerStatusCard';
 import { AttestationCard } from '../AttestationCard';
 import { ConnectGate, SectionHeading } from './Activity';
 import { HashCopyChip } from '../HashCopyChip';
@@ -136,6 +137,11 @@ export function Policy({
               publicEnv?.SNAPSHOT_FALLBACK_SPACES_PUBLIC,
             )}
           />
+        </div>
+      )}
+      {token && profile.profile && (
+        <div style={{ marginTop: 16 }}>
+          <PollerStatusCard />
         </div>
       )}
       <div style={{ marginTop: 16 }}>

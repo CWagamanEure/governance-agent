@@ -1905,6 +1905,70 @@ input[type="range"] {
   gap: 2px;
 }
 
+/* Background poller status card. Adopts the same heading + helper
+   pattern as the editor sections so it inherits the design language
+   from P1. */
+.poller-card { padding: 14px 16px; }
+.poller-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.poller-head h4 { margin: 0; font-size: 14px; font-weight: 600; }
+.poller-pill {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--fg-soft);
+}
+.poller-pill-on {
+  color: var(--good, #6cd07a);
+  border-color: rgba(108, 208, 122, 0.4);
+  background: rgba(108, 208, 122, 0.08);
+}
+.poller-pill-busy {
+  color: var(--accent);
+  border-color: rgba(98, 184, 255, 0.4);
+  background: rgba(98, 184, 255, 0.08);
+}
+.poller-pill-off { color: var(--fg-soft); }
+.poller-off { opacity: 0.75; }
+
+.poller-stats {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 16px;
+}
+.poller-stats li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12.5px;
+  color: var(--fg-dim);
+  border-bottom: 1px dashed var(--border);
+  padding-bottom: 4px;
+}
+.poller-stats li code {
+  font-family: var(--mono);
+  color: var(--fg);
+  background: var(--bg-elev-2);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+.poller-stats-error code {
+  color: #ff7a85 !important;
+  background: rgba(255, 122, 133, 0.08) !important;
+}
+
 .editor-select,
 .editor-input {
   background: var(--bg-elev-2);
