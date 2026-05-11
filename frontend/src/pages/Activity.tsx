@@ -26,16 +26,19 @@ import {
 } from '../api';
 import { getStoredToken } from '../lib/auth';
 import { suggestedVoteLabel, suggestedVoteMeta, suggestedVoteReason } from '../lib/decision';
-import { FEATURED } from '../data';
+import { DaoBadge } from '../DaoBadge';
 
 type AuthState =
   | { status: 'loading' }
   | { status: 'anonymous' }
   | { status: 'authed'; address: string };
 
-const ACTIVE_LIMIT = 3;
-const DAO_SPACE = 'arbitrumfoundation.eth';
+// Per-space limit on active proposals scanned. With ~4 allowlisted spaces
+// this caps the pending queue at ~12 items, plenty for the demo without
+// blowing up the live LLM extraction load on first paint.
+const ACTIVE_LIMIT_PER_SPACE = 5;
 const RECENT_CAP = 50;
+const LEGACY_DEFAULT_SPACE = 'arbitrumfoundation.eth';
 
 type ChoiceLabel = 'FOR' | 'AGAINST' | 'ABSTAIN';
 const CHOICE_LABELS: Record<number, ChoiceLabel> = { 1: 'FOR', 2: 'AGAINST', 3: 'ABSTAIN' };
@@ -43,6 +46,11 @@ const CHOICE_LABELS: Record<number, ChoiceLabel> = { 1: 'FOR', 2: 'AGAINST', 3: 
 type ActivityItem = {
   proposal_id: string;
   title: string | null;
+  // Space is optional for backward compat with localStorage entries written
+  // before multi-DAO support. RecentRow falls back to LEGACY_DEFAULT_SPACE
+  // (arbitrumfoundation.eth) so existing rows still link to a valid
+  // Snapshot URL.
+  space?: string;
   signed_choice: number;
   signed_at: number;
   signed_by_address: string | null;
@@ -55,6 +63,7 @@ type ActivityItem = {
 type Pending = {
   proposalId: string;
   title: string | null;
+  space: string;
   pipeline: PipelineResult;
   triggered_rule: string | null;
 };
@@ -70,10 +79,12 @@ function loadRecent(address: string): ActivityItem[] {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     // Backfill the submission field for entries written before submission
-    // was added — those rows were sign-only by definition.
+    // was added — those rows were sign-only by definition. Space is also
+    // backfilled to LEGACY_DEFAULT_SPACE for items predating multi-DAO.
     return (parsed as Array<Partial<ActivityItem>>).map((r) => ({
       proposal_id: String(r.proposal_id ?? ''),
       title: r.title ?? null,
+      space: typeof r.space === 'string' ? r.space : undefined,
       signed_choice: Number(r.signed_choice ?? 0),
       signed_at: Number(r.signed_at ?? 0),
       signed_by_address: r.signed_by_address ?? null,
@@ -96,10 +107,14 @@ export function Activity({
   auth,
   hasProfile,
   onSignIn,
+  daoSpace,
+  fallbackSpaces,
 }: {
   auth: AuthState;
   hasProfile: boolean;
   onSignIn: () => void;
+  daoSpace: string | null;
+  fallbackSpaces: string[];
 }) {
   if (auth.status !== 'authed') {
     return (
@@ -127,10 +142,24 @@ export function Activity({
     );
   }
 
-  return <ActivityAuthed address={auth.address} />;
+  return (
+    <ActivityAuthed
+      address={auth.address}
+      daoSpace={daoSpace}
+      fallbackSpaces={fallbackSpaces}
+    />
+  );
 }
 
-function ActivityAuthed({ address }: { address: string }) {
+function ActivityAuthed({
+  address,
+  daoSpace,
+  fallbackSpaces,
+}: {
+  address: string;
+  daoSpace: string | null;
+  fallbackSpaces: string[];
+}) {
   const [pending, setPending] = useState<Pending[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [recent, setRecent] = useState<ActivityItem[]>(() => loadRecent(address));
@@ -139,38 +168,60 @@ function ActivityAuthed({ address }: { address: string }) {
   // Reload recent when the address changes (wallet swap).
   useEffect(() => { setRecent(loadRecent(address)); }, [address]);
 
-  // Fetch active proposals + bundled FEATURED, run the pipeline against each,
-  // bucket the MANUAL_REVIEW ones as "pending".
+  // Live-fetch active proposals across primary + every fallback space,
+  // then run the pipeline against each in parallel. Multi-DAO surface:
+  // pending queue shows whatever your policy is currently flagging across
+  // ALL allowlisted DAOs, with a DaoBadge per row. No FEATURED fakes.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const live = await fetchActiveProposals(DAO_SPACE, ACTIVE_LIMIT).catch(() => []);
-        const liveIds = live.map((p) => p.id);
-        const featuredIds = FEATURED.map((p) => p.id);
-        const allIds = Array.from(new Set([...liveIds, ...featuredIds]));
+        const spacesToScan = [
+          ...(daoSpace ? [daoSpace] : []),
+          ...fallbackSpaces.filter((s) => s !== daoSpace),
+        ];
+        if (spacesToScan.length === 0) {
+          if (!cancelled) setPending([]);
+          return;
+        }
+
+        // Step 1: fetch active proposal id+title from every space in parallel.
+        // .catch returns [] per-space so one slow space does not block others.
+        const perSpace = await Promise.all(
+          spacesToScan.map((space) =>
+            fetchActiveProposals(space, ACTIVE_LIMIT_PER_SPACE)
+              .then((items) => items.map((p) => ({ space, id: p.id })))
+              .catch(() => [] as Array<{ space: string; id: string }>),
+          ),
+        );
+        const all = perSpace.flat();
+        if (cancelled) return;
+
+        // Step 2: for each id, fetch the full proposal body + run the
+        // pipeline, all in parallel via Promise.allSettled. Rejections per
+        // item just produce a null and get filtered out.
+        const token = getStoredToken();
+        const settled = await Promise.allSettled(
+          all.map(async ({ space, id }) => {
+            const proposal = await fetchSnapshotProposal(id);
+            if (!proposal) return null;
+            const pipeline = await runPipeline({ proposal, token });
+            return { space, proposal, pipeline };
+          }),
+        );
+        if (cancelled) return;
 
         const results: Pending[] = [];
-        for (const id of allIds) {
-          if (cancelled) return;
-          // Pull the proposal full body from Snapshot first (cached extraction
-          // doesn't include the body object the pipeline expects).
-          const proposal = await fetchSnapshotProposal(id).catch(() => null);
-          if (!proposal) continue;
-          const featured = FEATURED.find((f) => f.id === id);
-          const token = getStoredToken();
-          const pipeline = await runPipeline({
-            proposal,
-            analysis: featured?.analysis,
-            token,
-          }).catch(() => null);
-          if (cancelled) return;
+        for (const r of settled) {
+          if (r.status !== 'fulfilled' || !r.value) continue;
+          const { space, proposal, pipeline } = r.value;
           if (!pipeline?.evaluation) continue;
           if (pipeline.evaluation.decision !== 'MANUAL_REVIEW') continue;
           const triggered_rule = pipeline.evaluation.triggered_rules[0]?.id ?? null;
           results.push({
-            proposalId: id,
+            proposalId: proposal.id,
             title: proposal.title ?? null,
+            space,
             pipeline,
             triggered_rule,
           });
@@ -181,7 +232,7 @@ function ActivityAuthed({ address }: { address: string }) {
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [daoSpace, fallbackSpaces.join(',')]);
 
   // Items already signed shouldn't show up in pending, even if the page
   // re-fetches them. Filter pending by the recent-activity ids.
@@ -203,7 +254,6 @@ function ActivityAuthed({ address }: { address: string }) {
     try {
       const result = await runPipeline({
         proposal,
-        analysis: FEATURED.find((f) => f.id === p.proposalId)?.analysis,
         token,
         sign: true,
         override_choice: choice,
@@ -227,6 +277,7 @@ function ActivityAuthed({ address }: { address: string }) {
       const newItem: ActivityItem = {
         proposal_id: p.proposalId,
         title: p.title,
+        space: p.space,
         signed_choice: choice,
         signed_at: Date.now(),
         signed_by_address: result.vote.envelope.address ?? null,
@@ -318,7 +369,10 @@ function PendingCard({
     <article className="activity-pending">
       <header className="activity-pending-head">
         <div>
-          <h3 className="activity-pending-title">{pending.title ?? pending.proposalId.slice(0, 14) + '…'}</h3>
+          <h3 className="activity-pending-title">
+            <DaoBadge space={pending.space} />
+            {pending.title ?? pending.proposalId.slice(0, 14) + '…'}
+          </h3>
           <div className="muted tiny" style={{ marginTop: 2 }}>
             <code>{pending.proposalId.slice(0, 14)}…</code>
             {pending.triggered_rule && (
@@ -440,6 +494,10 @@ function DecideModal({
 function RecentRow({ item }: { item: ActivityItem }) {
   const choice = CHOICE_LABELS[item.signed_choice] ?? `choice ${item.signed_choice}`;
   const when = new Date(item.signed_at).toLocaleString();
+  // Multi-DAO: link uses the space recorded on the item. Legacy items
+  // written before multi-DAO support default to LEGACY_DEFAULT_SPACE
+  // (arbitrumfoundation.eth) — all old votes were against Arbitrum.
+  const space = item.space ?? LEGACY_DEFAULT_SPACE;
 
   let snapshotLine: ReactNode = null;
   if (item.submission == null) {
@@ -453,7 +511,7 @@ function RecentRow({ item }: { item: ActivityItem }) {
           <>
             {' · '}
             <a
-              href={`https://snapshot.org/#/arbitrumfoundation.eth/proposal/${item.proposal_id}`}
+              href={`https://snapshot.org/#/${space}/proposal/${item.proposal_id}`}
               target="_blank"
               rel="noopener noreferrer"
             >
@@ -476,7 +534,10 @@ function RecentRow({ item }: { item: ActivityItem }) {
   return (
     <div className="activity-recent">
       <div className="activity-recent-main">
-        <div className="activity-recent-title">{item.title ?? item.proposal_id.slice(0, 14) + '…'}</div>
+        <div className="activity-recent-title">
+          <DaoBadge space={space} />
+          {item.title ?? item.proposal_id.slice(0, 14) + '…'}
+        </div>
         <div className="muted tiny" style={{ marginTop: 2 }}>
           signed {when}
           {item.signed_by_address && (

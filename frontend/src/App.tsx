@@ -30,6 +30,14 @@ import { Policy } from './pages/Policy';
 
 type Tab = 'activity' | 'proposals' | 'policy';
 
+// Parse a comma-separated space list from a public env var. Same shape as
+// the helper in pages/Policy.tsx and the backend's parseSpaceList — kept
+// inline here to avoid a shared util file for a 4-line function.
+function parseSpaceList(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  return raw.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
 function useHashRoute(): string {
   const [hash, setHash] = useState(window.location.hash || '#/');
   useEffect(() => {
@@ -209,6 +217,13 @@ function Dashboard({ tab }: { tab: Tab }) {
   const profileReady = profileLoaded || auth.status === 'anonymous';
   const attestationReady = info?.attestation?.status === 'available';
 
+  // Derived once and threaded to every consumer that needs to fan across
+  // the allowlisted DAOs (Activity, Proposals, Policy → SignAndVerifyCard,
+  // Policy → AutopilotRunCard). publicEnv exposes the primary DAO directly
+  // and the comma-separated fallback list.
+  const primaryDaoSpace = info?.env?.DAO_SPACE_PUBLIC ?? null;
+  const fallbackDaoSpaces = parseSpaceList(info?.env?.SNAPSHOT_FALLBACK_SPACES_PUBLIC);
+
   return (
     <div className="dash">
       <TopBar
@@ -241,6 +256,8 @@ function Dashboard({ tab }: { tab: Tab }) {
             auth={auth}
             hasProfile={hasProfile}
             onSignIn={handleSignIn}
+            daoSpace={primaryDaoSpace}
+            fallbackSpaces={fallbackDaoSpaces}
           />
         )}
 
