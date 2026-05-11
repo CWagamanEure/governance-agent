@@ -1703,8 +1703,22 @@ app.post(
     for (let i = 0; i < willSubmit.length; i++) {
       const item = willSubmit[i];
       const original = proposals.find((p) => p.id === item.proposal_id)!;
-      // Re-grab cached for this proposal — already established above to exist.
-      const cached = getCachedAnalysis(item.proposal_id, EXTRACTION_SCHEMA_VERSION)!;
+      // Re-grab cached for this proposal. Normally guaranteed to exist —
+      // plan phase wrote through after a live extraction — but pipeline.ts
+      // swallows cache-write failures (intentional: a write failure should
+      // not poison the pipeline response). If the write silently failed,
+      // the cache lookup here returns null. Defensive: mark the item as
+      // submission-skipped with a clear reason instead of crashing the
+      // whole endpoint via a non-null-assertion + null.analysis_json
+      // TypeError that escapes the per-item try block below.
+      const cached = getCachedAnalysis(item.proposal_id, EXTRACTION_SCHEMA_VERSION);
+      if (!cached) {
+        item.submitted = {
+          ok: false,
+          error: 'cache_lookup_failed_post_extraction',
+        };
+        continue;
+      }
       const analysis = JSON.parse(cached.analysis_json) as AnalysisForPolicy;
       analysis.extraction_confidence = cached.extraction_confidence;
       const evaluation = evaluatePolicy(analysis, policy, rules, {
