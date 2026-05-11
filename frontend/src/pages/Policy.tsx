@@ -261,6 +261,35 @@ function ProfileCard({
           Emission increases: {hard.vote_against_emission_increases ? 'AGAINST' : 'allowed by defaults'}
         </p>
       </div>
+
+      <AutopilotRow autopilot={p.autopilot} />
+    </div>
+  );
+}
+
+function AutopilotRow({
+  autopilot,
+}: {
+  autopilot:
+    | { enabled?: boolean; min_confidence?: number; decisions?: string[] }
+    | undefined;
+}) {
+  const enabled = autopilot?.enabled === true;
+  const floor = typeof autopilot?.min_confidence === 'number' ? autopilot.min_confidence : 0.85;
+  const decisions = Array.isArray(autopilot?.decisions) ? autopilot!.decisions : ['FOR'];
+  return (
+    <div className="review-section">
+      <div className="dft-label">Autopilot</div>
+      <p className={`tiny ${enabled ? '' : 'muted'}`}>
+        Status:{' '}
+        <strong style={{ color: enabled ? 'var(--good, #6cd07a)' : 'var(--fg-soft)' }}>
+          {enabled ? 'enabled' : 'disabled'}
+        </strong>
+        {' · '}
+        Confidence floor: <code>{floor.toFixed(2)}</code>
+        {' · '}
+        Decisions: <code>{decisions.length === 0 ? '(none)' : decisions.join(', ')}</code>
+      </p>
     </div>
   );
 }
