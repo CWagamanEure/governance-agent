@@ -41,6 +41,7 @@ import {
   compileProfileToRules,
   evaluate as evaluatePolicy,
   isAutopilotEligible,
+  normalizeProfile as normalizeProfileFn,
   type AnalysisForPolicy,
   type PolicyProfileT,
 } from './policy.js';
@@ -1459,7 +1460,14 @@ app.post(
     }
 
     const dryRun = body.dry_run === true;
-    const maxVotes = Math.min(Math.max(body.max_votes ?? 10, 1), 25);
+    // Coerce max_votes defensively. Math.min(Math.max(NaN,1),25) = NaN, which
+    // would silently turn slice(0,NaN) into [] and the loop into a no-op —
+    // operator narrates "we just submitted 6 votes" while nothing went out.
+    // Round to integer, clamp to [1,25], default 10 on any non-finite input.
+    const rawMax = Number(body?.max_votes);
+    const maxVotes = Number.isFinite(rawMax)
+      ? Math.min(Math.max(Math.trunc(rawMax), 1), 25)
+      : 10;
     const proposals = Array.isArray(body.proposals) ? (body.proposals as SnapshotProposalRaw[]) : [];
 
     const user = findOrCreateUser(address);
@@ -1470,13 +1478,32 @@ app.post(
         409,
       );
     }
-    const profile = JSON.parse(stored.profile_json) as PolicyProfileT;
-    const policy = PolicyProfileSchema.parse(profile); // re-normalize so older saves get autopilot defaults
+    // safeParse instead of parse: a corrupt saved profile would otherwise
+    // throw a ZodError as a 500 with the issues array as the body. Fall
+    // through to normalizeProfile which already handles legacy shapes and
+    // returns DEFAULT_PROFILE as a last resort.
+    let profile: PolicyProfileT;
+    try {
+      const raw = JSON.parse(stored.profile_json);
+      const parsed = PolicyProfileSchema.safeParse(raw);
+      profile = parsed.success ? parsed.data : normalizeProfileFn(raw);
+    } catch {
+      return c.json(
+        { error: 'profile_invalid', message: 'Saved policy could not be parsed; re-save from the editor.' },
+        500,
+      );
+    }
+    const policy = profile;
     const rules = compileProfileToRules(policy);
 
     // Live-submit gate: the user's saved policy must have autopilot.enabled.
-    // Dry-run runs regardless so the editor can preview "what WOULD happen
-    // if I enabled it" without re-saving.
+    // Dry-run runs regardless so the editor can preview eligibility.
+    //
+    // For dry-run with autopilot disabled in the saved policy, force-evaluate
+    // as if enabled=true so the editor preview is meaningful for the user's
+    // most likely first interaction (they have not saved with enabled=true
+    // yet). Without this, the dry-run plan returns all-eligible-false and
+    // the operator cannot see what WOULD auto-vote.
     if (!policy.autopilot.enabled && !dryRun) {
       return c.json(
         {
@@ -1487,6 +1514,9 @@ app.post(
         400,
       );
     }
+    const effectiveAutopilot = dryRun
+      ? { ...policy.autopilot, enabled: true }
+      : policy.autopilot;
 
     type PlanItem = {
       proposal_id: string;
@@ -1499,6 +1529,9 @@ app.post(
       submitted?: { ok: boolean; snapshot_url?: string; error?: string };
     };
 
+    // Per-item: any throw inside this map (corrupt JSON, missing field) is
+    // caught and surfaced as a single not-eligible row instead of crashing
+    // the whole batch. The other 9 of 10 items still get processed.
     const plan: PlanItem[] = proposals.map((p) => {
       const space = p.space?.id ?? null;
       const cached = getCachedAnalysis(p.id, EXTRACTION_SCHEMA_VERSION);
@@ -1513,35 +1546,47 @@ app.post(
           reason: 'no_cached_extraction',
         };
       }
-      const analysis = JSON.parse(cached.analysis_json) as AnalysisForPolicy;
-      analysis.extraction_confidence = cached.extraction_confidence;
-      const evaluation = evaluatePolicy(analysis, policy, rules, {
-        id: p.id,
-        author_address: p.author,
-        space: space ?? undefined,
-      });
-      const eligible = isAutopilotEligible(evaluation, policy.autopilot);
-      let reason: string | undefined;
-      if (!eligible) {
-        if (evaluation.decision === 'MANUAL_REVIEW') reason = 'decision_manual_review';
-        else if (evaluation.confidence < policy.autopilot.min_confidence) reason = 'below_confidence_floor';
-        else if (
-          !policy.autopilot.decisions.includes(
-            evaluation.decision as 'FOR' | 'AGAINST' | 'ABSTAIN',
+      try {
+        const analysis = JSON.parse(cached.analysis_json) as AnalysisForPolicy;
+        analysis.extraction_confidence = cached.extraction_confidence;
+        const evaluation = evaluatePolicy(analysis, policy, rules, {
+          id: p.id,
+          author_address: p.author,
+          space: space ?? undefined,
+        });
+        const eligible = isAutopilotEligible(evaluation, effectiveAutopilot);
+        let reason: string | undefined;
+        if (!eligible) {
+          if (evaluation.decision === 'MANUAL_REVIEW') reason = 'decision_manual_review';
+          else if (evaluation.confidence < effectiveAutopilot.min_confidence) reason = 'below_confidence_floor';
+          else if (
+            !effectiveAutopilot.decisions.includes(
+              evaluation.decision as 'FOR' | 'AGAINST' | 'ABSTAIN',
+            )
           )
-        )
-          reason = 'decision_not_in_allowlist';
-        else reason = 'autopilot_disabled';
+            reason = 'decision_not_in_allowlist';
+          else reason = 'autopilot_disabled';
+        }
+        return {
+          proposal_id: p.id,
+          title: p.title ?? null,
+          space,
+          decision: evaluation.decision,
+          confidence: evaluation.confidence,
+          eligible,
+          reason,
+        };
+      } catch (e) {
+        return {
+          proposal_id: p.id,
+          title: p.title ?? null,
+          space,
+          decision: null,
+          confidence: null,
+          eligible: false,
+          reason: `cached_extraction_corrupt: ${e instanceof Error ? e.message : String(e)}`,
+        };
       }
-      return {
-        proposal_id: p.id,
-        title: p.title ?? null,
-        space,
-        decision: evaluation.decision,
-        confidence: evaluation.confidence,
-        eligible,
-        reason,
-      };
     });
 
     if (dryRun) {
@@ -1562,7 +1607,21 @@ app.post(
     const eligible = plan.filter((p) => p.eligible);
     const willSubmit = eligible.slice(0, maxVotes);
     const capped = eligible.length > maxVotes;
-    const acct = userWallet(address as `0x${string}`);
+    // userWallet throws synchronously if MNEMONIC is missing. Catching here
+    // means a misconfigured deploy returns a clean 503 instead of crashing
+    // mid-batch with a stack trace in the body.
+    let acct;
+    try {
+      acct = userWallet(address as `0x${string}`);
+    } catch (e) {
+      return c.json(
+        {
+          error: 'wallet_unavailable',
+          message: e instanceof Error ? e.message : String(e),
+        },
+        503,
+      );
+    }
     const userIdForAudit = user.id;
     let submittedCount = 0;
 
