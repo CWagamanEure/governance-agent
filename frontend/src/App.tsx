@@ -188,7 +188,7 @@ function Dashboard({ tab }: { tab: Tab }) {
 
   async function resetDemoProgress() {
     const confirmed = window.confirm(
-      'Reset demo? This wipes your votes and policy versions, then seeds the demo profile (DEMO_PROFILE) so the four-step ACT 2 peel produces deterministic flips. Your wallet session stays signed in.',
+      'Reset? This wipes your votes and policy versions and returns you to onboarding. Your wallet session stays signed in.',
     );
     if (!confirmed) return;
 
@@ -409,9 +409,9 @@ function DemoGuide({
         <button
           className="link-btn demo-reset"
           onClick={onReset}
-          title="Wipe saved policy + voting history and re-run onboarding from scratch"
+          title="Wipe saved policy and voting history, then re-run onboarding"
         >
-          Reset demo
+          Reset
         </button>
       </div>
       <div className="demo-guide-steps">

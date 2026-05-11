@@ -249,7 +249,7 @@ function ValuesStep({
               if (
                 value.trim().length > 0 &&
                 !window.confirm(
-                  'Replace your typed values with the demo values? Your text will be lost.',
+                  'Replace your typed values with the example values? Your text will be lost.',
                 )
               ) {
                 return;
@@ -257,7 +257,7 @@ function ValuesStep({
               onChange(DEMO_VALUES);
             }}
           >
-            Use demo values
+            Use example values
           </button>
         </div>
         {VALUE_EXAMPLES.map((ex) => (
@@ -331,7 +331,7 @@ function CalibrationStep({
             }))
           }
         >
-          Use demo calibration
+          Use example calibration
         </button>
         <span className="muted tiny">preselects {Object.keys(DEMO_CALIBRATION).length} reviewable votes</span>
       </div>

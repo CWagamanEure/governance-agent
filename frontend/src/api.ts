@@ -298,11 +298,16 @@ export async function saveProfile(args: {
 }
 
 export async function resetDemo(token: string): Promise<{ ok: true; votes: number; decisions: number; profiles: number }> {
+  // skip_seed wipes the user back to a fresh onboarding state instead of
+  // installing the hand-tuned DEMO_PROFILE. This is what the Reset button
+  // does now: the user re-runs onboarding (with the "Use example values"
+  // and "Use example calibration" shortcuts to keep it fast).
   const r = await fetch(`${BACKEND_URL}/demo/reset`, {
     method: 'POST',
-    headers: { authorization: `Bearer ${token}` },
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ skip_seed: true }),
   });
-  if (!r.ok) throw new Error(`demo reset failed: ${r.status} ${await r.text()}`);
+  if (!r.ok) throw new Error(`reset failed: ${r.status} ${await r.text()}`);
   return r.json();
 }
 
