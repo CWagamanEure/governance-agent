@@ -116,6 +116,14 @@ export const PolicyProfile = z.object({
     enabled: false,
     min_confidence: 0.85,
   }),
+  // Per-user list of Snapshot spaces the user wants the agent to watch.
+  // Always a subset of the deploy's allowlist (the allowlist remains the
+  // outer security gate at submission time). Empty array = follow nothing
+  // = autopilot is effectively off because there are no proposals to scan.
+  // Legacy profiles parse with an empty default; the frontend / autopilot
+  // loop should fall back to the deploy allowlist when this is empty
+  // until the user makes an explicit choice.
+  followed_spaces: z.array(z.string()).default([]),
   stated_values: z.array(z.string()).default([]),
 });
 export type PolicyProfileT = z.infer<typeof PolicyProfile>;
@@ -1019,6 +1027,7 @@ export const DEFAULT_PROFILE: PolicyProfileT = {
     enabled: false,
     min_confidence: 0.85,
   },
+  followed_spaces: [],
   stated_values: [],
 };
 

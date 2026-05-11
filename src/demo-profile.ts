@@ -69,6 +69,10 @@ export const DEMO_PROFILE: PolicyProfileT = {
     enabled: false,
     min_confidence: 0.85,
   },
+  // Empty = autopilot falls back to the deploy allowlist. The seeded
+  // demo user makes an explicit follow choice in onboarding rather than
+  // pre-selecting one here, so the demo can show the per-user pick.
+  followed_spaces: [],
   stated_values: [
     'I support small accountable grants for ecosystem work — under $500k, with milestones and reporting.',
     'META_GOVERNANCE proposals should default to ABSTAIN: I do not have a strong opinion on most procedure changes, but I do not want to autovote either way.',

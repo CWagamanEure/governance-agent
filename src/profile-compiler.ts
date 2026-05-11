@@ -252,6 +252,11 @@ function fallbackCompile(input: CompileInput): PolicyProfileT {
       enabled: false,
       min_confidence: 0.85,
     },
+    // Fallback compiler does not have visibility into the deploy
+    // allowlist, so leave followed_spaces empty. The autopilot loop
+    // treats empty as "follow nothing yet" and surfaces a "pick which
+    // DAOs to follow" prompt in the editor.
+    followed_spaces: [],
     stated_values: stated,
   };
 }
