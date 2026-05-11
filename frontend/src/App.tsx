@@ -205,6 +205,15 @@ function Dashboard({ tab }: { tab: Tab }) {
 
   const hasProfile = !!profile?.profile;
   const profileReady = profileLoaded || auth.status === 'anonymous';
+  // Empty-follows banner needs to know how many DAOs the user picked.
+  // null = no profile yet (banner hides), 0 = saved but empty list
+  // (banner shows), N>0 = at least one (banner hides). Derived from
+  // the same profile state the Policy page reads.
+  const followedSpacesCount: number | null = hasProfile
+    ? Array.isArray(profile?.profile?.profile_json?.followed_spaces)
+      ? (profile!.profile!.profile_json.followed_spaces as string[]).length
+      : 0
+    : null;
 
   // Derived once and threaded to every consumer that needs to fan across
   // the allowlisted DAOs (Activity, Proposals, Policy → SignAndVerifyCard,
@@ -235,6 +244,7 @@ function Dashboard({ tab }: { tab: Tab }) {
             key={`activity-${demoResetVersion}`}
             auth={auth}
             hasProfile={hasProfile}
+            followedSpacesCount={followedSpacesCount}
             onSignIn={handleSignIn}
             daoSpace={primaryDaoSpace}
             fallbackSpaces={fallbackDaoSpaces}
@@ -247,6 +257,7 @@ function Dashboard({ tab }: { tab: Tab }) {
             auth={auth}
             hasProfile={hasProfile}
             profileLoaded={profileReady}
+            followedSpacesCount={followedSpacesCount}
             onSignIn={handleSignIn}
             daoSpace={primaryDaoSpace}
             fallbackSpaces={fallbackDaoSpaces}

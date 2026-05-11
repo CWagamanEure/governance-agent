@@ -21,6 +21,7 @@ import {
 import { getStoredToken } from '../lib/auth';
 import { suggestedVoteLabel, suggestedVoteMeta } from '../lib/decision';
 import { DaoBadge } from '../DaoBadge';
+import { EmptyFollowsBanner } from '../EmptyFollowsBanner';
 import { Card, ConnectGate, EmptyState, SectionHeading } from './Activity';
 
 // Per-space cap on how many active proposals we scan. Snapshot's query
@@ -69,6 +70,7 @@ export function Proposals({
   auth,
   hasProfile,
   profileLoaded,
+  followedSpacesCount,
   onSignIn,
   daoSpace,
   fallbackSpaces,
@@ -76,6 +78,7 @@ export function Proposals({
   auth: AuthState;
   hasProfile: boolean;
   profileLoaded: boolean;
+  followedSpacesCount: number | null;
   onSignIn: () => void;
   daoSpace: string | null;
   fallbackSpaces: string[];
@@ -184,6 +187,10 @@ export function Proposals({
 
   return (
     <>
+      <EmptyFollowsBanner
+        followedSpacesCount={followedSpacesCount}
+        hasProfile={hasProfile}
+      />
       <SectionHeading>Active proposals</SectionHeading>
       {auth.status === 'authed' && !profileLoaded && (
         <Card>

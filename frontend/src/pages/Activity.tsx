@@ -27,6 +27,7 @@ import {
 import { getStoredToken } from '../lib/auth';
 import { suggestedVoteLabel, suggestedVoteMeta, suggestedVoteReason } from '../lib/decision';
 import { DaoBadge } from '../DaoBadge';
+import { EmptyFollowsBanner } from '../EmptyFollowsBanner';
 
 type AuthState =
   | { status: 'loading' }
@@ -106,12 +107,14 @@ function saveRecent(address: string, items: ActivityItem[]) {
 export function Activity({
   auth,
   hasProfile,
+  followedSpacesCount,
   onSignIn,
   daoSpace,
   fallbackSpaces,
 }: {
   auth: AuthState;
   hasProfile: boolean;
+  followedSpacesCount: number | null;
   onSignIn: () => void;
   daoSpace: string | null;
   fallbackSpaces: string[];
@@ -147,6 +150,8 @@ export function Activity({
       address={auth.address}
       daoSpace={daoSpace}
       fallbackSpaces={fallbackSpaces}
+      followedSpacesCount={followedSpacesCount}
+      hasProfile={hasProfile}
     />
   );
 }
@@ -155,10 +160,14 @@ function ActivityAuthed({
   address,
   daoSpace,
   fallbackSpaces,
+  followedSpacesCount,
+  hasProfile,
 }: {
   address: string;
   daoSpace: string | null;
   fallbackSpaces: string[];
+  followedSpacesCount: number | null;
+  hasProfile: boolean;
 }) {
   const [pending, setPending] = useState<Pending[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -295,6 +304,10 @@ function ActivityAuthed({
 
   return (
     <>
+      <EmptyFollowsBanner
+        followedSpacesCount={followedSpacesCount}
+        hasProfile={hasProfile}
+      />
       <SectionHeading>Pending approvals</SectionHeading>
       <p className="muted tiny activity-queue-note">
         Review-gated active proposals appear here until you sign or submit a choice.

@@ -804,6 +804,25 @@ input[type="range"] {
 }
 .user-pill .signout:hover { color: var(--bad); background: rgba(255,120,120,0.06); }
 
+/* Empty-follows banner — surfaced on Activity / Proposals when the
+   user has saved a policy but picked zero DAOs to follow. Loud-ish
+   amber so it stands out without feeling like an error. */
+.empty-follows-banner {
+  background: rgba(212, 166, 87, 0.10);
+  border: 1px solid rgba(212, 166, 87, 0.45);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: var(--fg);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.empty-follows-banner strong { color: #d4a657; }
+.empty-follows-banner .btn { margin-left: auto; }
+
 /* Trust ribbon */
 .trust-ribbon {
   background: var(--bg-elev-2);
