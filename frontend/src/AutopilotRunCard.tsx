@@ -25,7 +25,7 @@ import {
   type StoredProfile,
 } from './api';
 
-type Step = 'idle' | 'previewing' | 'previewed' | 'confirming' | 'running' | 'done' | 'error';
+type Step = 'idle' | 'previewing' | 'previewed' | 'running' | 'done' | 'error';
 
 export function AutopilotRunCard({
   token,
@@ -133,6 +133,21 @@ export function AutopilotRunCard({
     if (!result) return;
     const eligibleCount = result.plan.filter((p) => p.eligible).length;
     if (eligibleCount === 0) return;
+    // Guard against policy drift between Preview and Run — the user could
+    // have edited+saved the policy in another tab after Preview but before
+    // Run. The preview's policy_hash is captured at preview time; the live
+    // saved policy hash is on the prop. If they diverge, force a re-preview
+    // so the user is not authorizing votes against a stale plan.
+    const livePolicyHash = profile.hash;
+    if (result.policy_hash !== livePolicyHash) {
+      setError(
+        `Policy changed since Preview (was ${result.policy_hash.slice(0, 10)}…, ` +
+          `now ${livePolicyHash.slice(0, 10)}…). Click Preview again before running.`,
+      );
+      setStep('error');
+      setResult(null);
+      return;
+    }
     const ok = window.confirm(
       `Run autopilot live?\n\n` +
         `${eligibleCount} proposal${eligibleCount === 1 ? '' : 's'} eligible at your saved policy ` +
@@ -278,14 +293,22 @@ function PlanRow({ item, dry }: { item: AutopilotPlanItem; dry: boolean }) {
       {!dry && item.submitted && (
         <div className="autopilot-row-result">
           {item.submitted.ok ? (
-            <a
-              href={item.submitted.snapshot_url}
-              target="_blank"
-              rel="noreferrer"
-              className="trust-link"
-            >
-              ✓ submitted ↗
-            </a>
+            // Backend always sets snapshot_url on success, but guard
+            // explicitly — `<a href={undefined}>` renders as a broken anchor
+            // that styles as a link but does nothing on click. On stage,
+            // a "submitted" link that does nothing reads as broken.
+            item.submitted.snapshot_url ? (
+              <a
+                href={item.submitted.snapshot_url}
+                target="_blank"
+                rel="noreferrer"
+                className="trust-link"
+              >
+                ✓ submitted ↗
+              </a>
+            ) : (
+              <span className="trust-link">✓ submitted</span>
+            )
           ) : (
             <span className="autopilot-row-error muted tiny">
               ✗ {item.submitted.error}
