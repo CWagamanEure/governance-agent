@@ -211,6 +211,14 @@ app.get('/wallet', (c) => {
 });
 
 app.post('/wallet/sign-test', async (c) => {
+  // Signs an arbitrary caller-supplied message with the operator's
+  // MNEMONIC-derived app wallet. Useful for local smoke tests of the
+  // wallet plumbing, but a signature-minting oracle in production: a
+  // visitor could attribute signatures to the operator's identity.
+  // Gated behind isDebugEnabled() so production deploys 404 it.
+  if (!isDebugEnabled()) {
+    return c.json({ error: 'not found' }, 404);
+  }
   let body: { message?: string };
   try {
     body = await c.req.json();
@@ -475,6 +483,27 @@ app.post('/pipeline/run', async (c) => {
     rawOverride === 1 || rawOverride === 2 || rawOverride === 3 ? rawOverride : null;
   const submitToSnapshot = body?.submit === true;
 
+  // Auth gate for any path that could hit the LLM. extractOne fires whenever
+  // the caller did not supply analysis, OR force_live_extraction overrides
+  // cache + supplied analysis. Without this gate, an unauthenticated visitor
+  // could pound this endpoint with force_live_extraction:true and drain the
+  // operator's LLM budget. The auth check itself is cheap (JWT verify).
+  const llmCallPossible = !analysis || forceLiveExtraction;
+  if (llmCallPossible) {
+    try {
+      requireAuth(c);
+    } catch {
+      return c.json(
+        {
+          error: 'authentication_required',
+          message:
+            'Authentication is required for any pipeline run that may trigger live LLM extraction. Sign in via SIWE, or supply an analysis object in the body to skip extraction.',
+        },
+        401,
+      );
+    }
+  }
+
   // Submission is a public side effect on Snapshot. Gate on auth so the
   // audit log can attribute it; allowlist gate ensures we never POST to a
   // space we did not pre-approve. The proposal's space comes from the
@@ -714,6 +743,25 @@ app.post('/profile/compile', async (c) => {
 
   if (stated_values_text.trim().length < 10 && calibration.length === 0) {
     return c.json({ error: 'must provide stated_values_text or calibration votes' }, 400);
+  }
+
+  // Hard caps on input size: prevents a loop with max-size strings from
+  // burning input tokens at the operator's expense. 10kB of values text +
+  // 50 calibration items is far more than any honest user needs.
+  if (stated_values_text.length > 10_000) {
+    return c.json(
+      {
+        error: 'stated_values_text_too_long',
+        message: 'stated_values_text exceeds 10,000 characters',
+      },
+      413,
+    );
+  }
+  if (calibration.length > 50) {
+    return c.json(
+      { error: 'calibration_too_long', message: 'calibration must be ≤ 50 items' },
+      413,
+    );
   }
 
   try {
@@ -1481,11 +1529,14 @@ app.post(
     // many active proposals. Items past the cap are surfaced as
     // not-eligible with reason live_extraction_budget_exceeded; a
     // follow-up batch picks them up (and the previously-extracted ones
-    // are now cached and free). Body-overridable, clamped [0, 25].
+    // are now cached and free). Body-overridable but server-side
+    // clamped: real runs cap at 10, dry_run preview caps at 3 — a
+    // preview click should be cheap and repeatable for the editor.
+    const liveBudgetCeiling = dryRun ? 3 : 10;
     const rawBudget = Number(body?.live_extraction_budget);
     const liveExtractionBudget = Number.isFinite(rawBudget)
-      ? Math.min(Math.max(Math.trunc(rawBudget), 0), 25)
-      : 10;
+      ? Math.min(Math.max(Math.trunc(rawBudget), 0), liveBudgetCeiling)
+      : liveBudgetCeiling;
     const proposals = Array.isArray(body.proposals) ? (body.proposals as SnapshotProposalRaw[]) : [];
 
     const user = findOrCreateUser(address);
