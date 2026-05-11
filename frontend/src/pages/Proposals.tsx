@@ -23,13 +23,12 @@ import { suggestedVoteLabel, suggestedVoteMeta } from '../lib/decision';
 import { DaoBadge } from '../DaoBadge';
 import { Card, ConnectGate, EmptyState, SectionHeading } from './Activity';
 
-// Per-space cap on how many active proposals we scan, plus a total cap on
-// how many cards we actually render. Each rendered ProposalCard kicks off
-// an LLM extraction for any proposal not already cached, so total-cap is
-// what bounds page-load cost. With 4 allowlisted DAOs and these defaults,
-// worst case is 4 × ~$0.03 = ~$0.12 per page load.
+// Per-space cap on how many active proposals we scan. Snapshot's query
+// limit per call, so worst case is ACTIVE_LIMIT_PER_SPACE × allowlisted
+// DAOs cards on screen. We do not impose a separate render cap — the page
+// scrolls. Each rendered card may kick off one live LLM extraction if no
+// cache row exists.
 const ACTIVE_LIMIT_PER_SPACE = 3;
-const TOTAL_DISPLAY_CAP = 4;
 
 // Match the shape Activity writes to localStorage. We pull submission too
 // so the badge can distinguish "signed but not submitted" from "voted on
@@ -107,16 +106,14 @@ export function Proposals({
           ),
         );
         if (cancelled) return;
-        // Round-robin across spaces so the first N rendered cards aren't
-        // all from the same DAO. Cap to TOTAL_DISPLAY_CAP to bound cost.
+        // Round-robin across spaces so the first rendered cards aren't all
+        // from the same DAO. No total cap — the page scrolls.
         const interleaved: ActiveItem[] = [];
         const maxPerSpace = Math.max(...perSpace.map((p) => p.length), 0);
         for (let i = 0; i < maxPerSpace; i++) {
           for (const slot of perSpace) {
             if (slot[i]) interleaved.push(slot[i]);
-            if (interleaved.length >= TOTAL_DISPLAY_CAP) break;
           }
-          if (interleaved.length >= TOTAL_DISPLAY_CAP) break;
         }
         setActiveItems(interleaved);
       } catch (e: any) {
@@ -263,17 +260,8 @@ function ProposalsListNote({
       </p>
     );
   }
-  const recommendationCopy =
-    recommendationMode === 'paused'
-      ? 'Recommendations are paused until your policy is configured; live TEE extraction can still be run manually.'
-      : recommendationMode === 'default'
-        ? 'Each card runs the pipeline against the default preview policy.'
-        : 'Each card runs the pipeline against your saved policy.';
-  return (
-    <p className="muted tiny" style={{ marginTop: -4, marginBottom: 16 }}>
-      Showing {activeItems.length} live active proposal{activeItems.length === 1 ? '' : 's'} across {scannedSpaces.length} DAO{scannedSpaces.length === 1 ? '' : 's'} (capped at {TOTAL_DISPLAY_CAP}). {recommendationCopy}
-    </p>
-  );
+  // Loaded with items: the cards speak for themselves. No explainer.
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -521,9 +509,9 @@ function ProposalCard({
           className="btn"
           onClick={runLiveInTee}
           disabled={liveLoading || !proposal}
-          title="Re-runs the LLM extraction inside the attested TEE and replaces the cached score for this proposal. Autopilot only operates on cached scores, so this is also how new proposals become eligible for autopilot."
+          title="Re-runs the LLM extraction inside the attested TEE and replaces the cached score for this proposal."
         >
-          {liveLoading ? 'Re-scoring in TEE…' : 'Re-score in TEE'}
+          {liveLoading ? 'Rescoring…' : 'Rescore'}
         </button>
         {decision === 'FOR' || decision === 'AGAINST' || decision === 'ABSTAIN' ? (
           <button
