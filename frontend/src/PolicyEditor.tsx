@@ -160,21 +160,16 @@ export function PolicyEditor({
   // unchecks. We track restoration so we can surface a small banner.
   const [draft, setDraft] = useState<Profile>(() => {
     const restored = readPersistedDraft(baseProfile.id, baseProfile.profile_json);
-    const initial = restored ?? deepClone(baseProfile.profile_json);
-    // Legacy back-compat: profiles saved before B1 have followed_spaces=[]
-    // by Zod default. Treat empty as "user has not made an explicit pick
-    // yet" and pre-fill the full allowlist so the editor opens with
-    // every box checked, matching the pre-B3 implicit "watch everything"
-    // behavior. The save handler then writes whatever the user landed on.
-    if (
-      Array.isArray(initial.followed_spaces) &&
-      initial.followed_spaces.length === 0 &&
-      allowlistedSpaces.length > 0
-    ) {
-      initial.followed_spaces = [...allowlistedSpaces];
-    }
-    return initial;
+    return restored ?? deepClone(baseProfile.profile_json);
   });
+  // Track whether followed_spaces is empty in the saved profile so the
+  // editor can render an explicit "pick which DAOs to follow" prompt.
+  // Prior versions of this code mutated the initial draft to pre-fill
+  // the allowlist for empty profiles, which silently expanded user
+  // scope on any unrelated save (F2 audit fix).
+  const followsUnset =
+    Array.isArray(baseProfile.profile_json.followed_spaces) &&
+    baseProfile.profile_json.followed_spaces.length === 0;
   const [restoredFromStorage, setRestoredFromStorage] = useState(() =>
     readPersistedDraft(baseProfile.id, baseProfile.profile_json) !== null,
   );
@@ -420,6 +415,7 @@ export function PolicyEditor({
             draft={draft}
             setDraft={setDraft}
             allowlistedSpaces={allowlistedSpaces}
+            unsetInBaseProfile={followsUnset}
           />
           <AutopilotField
             draft={draft}
@@ -603,13 +599,24 @@ function FollowedSpacesField({
   draft,
   setDraft,
   allowlistedSpaces,
+  unsetInBaseProfile,
 }: {
   draft: Profile;
   setDraft: (p: Profile) => void;
   allowlistedSpaces: string[];
+  // True when the saved profile this editor opened over has an empty
+  // followed_spaces list. Used to render an explicit "pick some DAOs"
+  // prompt instead of silently pre-filling the allowlist into the
+  // draft (which would leak on any save).
+  unsetInBaseProfile: boolean;
 }) {
+  // Compare draft entries case-insensitively against the lowercased
+  // allowlistedSpaces; legacy profiles saved before F1 may have
+  // mixed-case entries that would otherwise miss the checkbox.
   const followed = new Set<string>(
-    Array.isArray(draft.followed_spaces) ? draft.followed_spaces : [],
+    (Array.isArray(draft.followed_spaces) ? (draft.followed_spaces as string[]) : []).map(
+      (s) => s.toLowerCase(),
+    ),
   );
   function toggle(space: string) {
     const next = new Set(followed);
@@ -625,10 +632,20 @@ function FollowedSpacesField({
       </section>
     );
   }
+  // Two prompts: the standard helper, plus a louder call-out when the
+  // user has never picked yet. The louder prompt only shows while the
+  // draft is also empty — once they tick a single box it disappears.
+  const showEmptyPrompt = unsetInBaseProfile && followed.size === 0;
   return (
     <section className="editor-section">
       <h4>Followed DAOs</h4>
       <p className="editor-helper">Autopilot only scans the DAOs you follow.</p>
+      {showEmptyPrompt && (
+        <p className="editor-helper-empty">
+          You haven&rsquo;t picked any DAOs yet. Tick at least one before saving so
+          autopilot has something to watch.
+        </p>
+      )}
       <div className="editor-checkbox-grid">
         {allowlistedSpaces.map((space) => (
           <label key={space} className="editor-checkbox">
