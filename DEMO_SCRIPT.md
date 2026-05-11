@@ -1,11 +1,13 @@
 # Demo Script — Governance Agent
 
-Rough flow. 4-6 minutes. The corpus, the editor, and the live sign-then-verify
-loop do most of the work.
+Rough flow. 5-7 minutes with the autopilot beat. The editor and the
+sign-verify-submit-autopilot chain do most of the work.
 
-**Core message:** the system finds obvious autovote rules from your calibration
-AND correctly defers on real proposals — both visible in the same editor — and
-the TEE wallet signs a real, replayable artifact about a real proposal.
+**Core message:** the user's policy is an editable, hashed, attestable
+contract. The TEE signs decisions against that contract. The user can
+opt into autonomous voting by setting a confidence floor in the same
+contract — and watch live what would auto-vote at any threshold. Every
+vote is traceable back to a specific saved policy version.
 
 ## Local prereqs (gitignored — don't check in)
 
@@ -263,6 +265,56 @@ upgrades still stay MANUAL_REVIEW (different rule fires:
 > has layered safety, not a single tunable knob. I can be aggressive on
 > category defaults; I can't accidentally turn off treasury review."
 
+## ACT 4.5 — Autopilot dial (60s)
+
+Still in the editor. Scroll down to the **Autopilot** section (it has a
+distinct accent border to read as a tier of authority, not another tuning
+knob).
+
+> "Now the autonomy question. Most AI agent products say 'trust me to
+> vote for you.' I want to authorize the system more precisely than that."
+
+Toggle **Autopilot** on. The summary line lights up:
+> Autopilot would currently vote on **0** of 48 cached proposals at this
+> configuration
+
+> "Zero, because every cached proposal is MANUAL_REVIEW under my saved
+> policy — that's the safety story working. Watch what changes when I
+> tune the threshold."
+
+Drag the **Confidence floor** slider down from 0.85 → 0.50. The counter
+stays at 0 because nothing autovotes (still MANUAL_REVIEW).
+
+> "Confidence doesn't change MANUAL_REVIEW. The eligibility rule is:
+> autopilot only fires on FOR / AGAINST / ABSTAIN, never on
+> MANUAL_REVIEW. So even at zero confidence floor, my safety floors
+> still hold."
+
+Now jump back to a permissive draft state — uncheck `META_GOVERNANCE`
+from manual_review_categories so the META proposal flips to ABSTAIN.
+The editor re-runs the diff. The Autopilot summary updates:
+
+> Autopilot would currently vote on **1** of 48 cached proposals
+> (decisions: ABSTAIN must be in the eligibility list)
+
+> "If ABSTAIN is in my eligibility list, autopilot picks up the META
+> proposal. Drag the floor up to 0.95 — back to 0. The slider IS the
+> trust contract."
+
+Verify the AUTO badge appears next to the Code of Conduct row in the
+diff panel as the slider crosses its confidence (0.91).
+
+> "Every one of those slider positions, every checkbox, every
+> threshold — they all hash into the policy. When I save, that hash
+> binds the wallet to those exact authorization conditions. The audit
+> log can prove later: 'this autopilot vote happened because policy
+> hash 0x... was active and the proposal scored 0.91 confidence
+> against your 0.85 floor.'"
+
+(Optional: Save the policy here so ACT 5 can run live autopilot.
+Otherwise leave autopilot off and use ACT 5 only for single-proposal
+sign + verify + submit.)
+
 ## ACT 5 — Trust path: sign → verify → submit (90s)
 
 Click Cancel back to the Policy page. Two new cards are now visible below
@@ -338,6 +390,42 @@ Kleros) instead of Arbitrum, briefly acknowledge:
 > The demo only works on the four DAOs the operator pre-allowlisted;
 > there is no path for arbitrary write access."
 
+### 5c.bis Autopilot batch (optional, only if 4.5 enabled autopilot)
+
+Below the SignAndVerify card is the **Autopilot batch run** card. If
+ACT 4.5 enabled autopilot in the saved policy, this is the operational
+counterpart to the slider.
+
+Click **Preview autopilot batch**. The card scans live-active proposals
+across all four allowlisted spaces, plus the cached corpus, and shows
+the per-item plan with eligibility verdict and reason. Items the
+autopilot would auto-vote on are flagged with the green AUTO badge.
+
+> "Same eligibility logic as the editor preview — but applied to live
+> proposals across all my allowlisted DAOs at once. The system did
+> the per-vote decision work without per-vote review. Closed cached
+> proposals show the verdict but Snapshot would reject them at submit
+> time — that is expected and surfaced explicitly."
+
+Two safe paths from here:
+
+(a) **If any active proposal is eligible:** click **Run live**. Confirm
+the dialog (spells out the saved-policy autopilot config and the
+eligible count). Per-item submission results render with Snapshot
+URLs. End the autonomy beat with: *"the agent just decided on 8
+proposals and submitted on 3, all without per-vote review, all
+auditable back to my saved policy hash."*
+
+(b) **If no active proposal is eligible (cached items only):** stay in
+dry-run. *"At demo time, none of the active proposals across these four
+DAOs cleared my 0.85 confidence floor. The system declines to autovote.
+The plan shows exactly which proposals it skipped and why. Same
+machinery would submit if any cleared the bar — same path I just walked
+through manually in 5a."*
+
+Either way, do NOT live-submit unless the operator has dry-run-tested the
+exact path within the last hour.
+
 ### 5d. Attestation
 
 Scroll to the **Attestation** card.
@@ -370,6 +458,26 @@ deployed app id pre-filled.
 ---
 
 ## Q&A prep
+
+**"How does the autonomous voting actually work? Is there a cron loop?"**
+Today, autopilot is triggered by clicking the Run-Autopilot button. The
+trigger is manual; the per-vote *decision* is autonomous (the system
+processed N proposals and applied the eligibility predicate without me
+reviewing each one). The cron version is the same code path behind a
+per-user opt-in we deliberately held — cross-user automated submission
+needs an on-call rotation we want to design carefully. The hard parts
+(per-user signing wallet, deterministic policy, signed audit trail,
+allowlist gate, batch processing with rate limit) all work today. Adding
+the timer is a runtime config change, not a code change.
+
+**"What stops me from accidentally enabling broad autonomous voting?"**
+Three layers. (1) Autopilot defaults to `enabled: false` and decisions:
+`['FOR']` only — opting in to AGAINST or ABSTAIN requires explicit
+toggles. (2) The confidence floor defaults to 0.85 — most cached
+proposals do not clear that, so the editor's live counter shows 0 even
+after enabling. (3) The allowlist on the backend rejects any vote
+targeting a space outside the explicit DAO_SPACE + SUBMIT_ALLOWLIST set.
+A misconfigured policy cannot reach a non-allowlisted DAO.
 
 **"Would you trust this with your real wallet?"**
 Yes. The system autovotes on the kinds of proposals my calibration clearly
@@ -424,15 +532,19 @@ rule id on each diff item.
       above). Confirm `GIT_COMMIT_PUBLIC` matches `git rev-parse HEAD`.
 - [ ] `npm run test:demo-peel` prints 4 × ✓ and "Demo peel matches".
 - [ ] `npm run test:sign-verify` prints 6 × ✓ and "Sign-then-verify loop closed".
+- [ ] `npm run test:autopilot` prints 12 × ✓ "Summary: 12/12 passed".
 - [ ] Frontend trust ribbon shows "Attested in EigenCompute TEE".
 - [ ] SIWE sign-in completed at least once before the demo.
 - [ ] Hit "Reset demo" once; confirm Policy page shows version 1 of seeded
-      DEMO_PROFILE (4 stated values, GRANT in manual_review_categories).
+      DEMO_PROFILE with autopilot.enabled=false.
 - [ ] Editor first paint shows "48 past proposals" and zero flipped.
-- [ ] AttestationCard renders Hardware/Code/Image/Measurement/Evidence rows
-      (not the "not running in TEE" fallback).
+- [ ] AttestationCard renders Hardware/Code/Image/Measurement/Evidence rows.
 - [ ] Run sign-then-verify on stage hardware; confirm signature recovers
       and verify takes <100 ms.
+- [ ] Open the Autopilot section in the editor and verify the slider
+      drag updates the "X of N" counter live.
+- [ ] Click "Preview autopilot batch" to confirm the AutopilotRunCard
+      reaches the backend and renders a plan.
 - [ ] Check Snapshot for active arbitrumfoundation.eth proposals 30 min
       before the demo so you know whether ACT 5c can fire.
 
