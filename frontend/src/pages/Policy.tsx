@@ -8,7 +8,6 @@ import { type AttestationStub, type StoredProfile, type WalletInfo } from '../ap
 import { getStoredToken } from '../lib/auth';
 import { Onboarding } from '../Onboarding';
 import { PolicyEditor } from '../PolicyEditor';
-import { PollerStatusCard } from '../PollerStatusCard';
 import { AttestationCard } from '../AttestationCard';
 import { ConnectGate, SectionHeading } from './Activity';
 import { HashCopyChip } from '../HashCopyChip';
@@ -129,11 +128,6 @@ export function Policy({
         onEditRules={() => setEditing(true)}
         onRecompile={onEdit}
       />
-      {token && profile.profile && (
-        <div style={{ marginTop: 16 }}>
-          <PollerStatusCard />
-        </div>
-      )}
       <div style={{ marginTop: 16 }}>
         <AttestationCard
           attestation={attestation}
