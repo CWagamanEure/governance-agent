@@ -265,61 +265,51 @@ upgrades still stay MANUAL_REVIEW (different rule fires:
 > has layered safety, not a single tunable knob. I can be aggressive on
 > category defaults; I can't accidentally turn off treasury review."
 
-## ACT 4.5 — Autopilot dial (60s)
+## ACT 4.5 — Autopilot dial (45s)
 
 Still in the editor. Scroll down to the **Autopilot** section (it has a
 distinct accent border to read as a tier of authority, not another tuning
 knob).
 
 > "Now the autonomy question. Most AI agent products say 'trust me to
-> vote for you.' I want to authorize the system more precisely than that."
+> vote for you.' I want to authorize the system more precisely than that —
+> on exactly the policy I just edited, with a confidence floor I pick."
 
 Toggle **Autopilot** on. The summary line lights up:
 > Autopilot would currently vote on **0** of 48 cached proposals at this
 > configuration
 
 > "Zero, because every cached proposal is MANUAL_REVIEW under my saved
-> policy — that's the safety story working. Watch what changes when I
-> tune the threshold."
-
-Drag the **Confidence floor** slider down from 0.85 → 0.50. The counter
-stays at 0 because nothing autovotes (still MANUAL_REVIEW).
-
-> "Confidence doesn't change MANUAL_REVIEW. The eligibility rule is:
-> autopilot only fires on FOR / AGAINST / ABSTAIN, never on
-> MANUAL_REVIEW. So even at zero confidence floor, my safety floors
-> still hold."
+> policy — that's the safety story working. Autopilot never fires on
+> MANUAL_REVIEW, regardless of confidence. So my saved policy is its
+> own safety floor."
 
 Now jump back to a permissive draft state — uncheck `META_GOVERNANCE`
 from manual_review_categories so the META proposal flips to ABSTAIN.
-The editor re-runs the diff. The Autopilot summary still says **0 of 48**.
-
-> "Code of Conduct flips to ABSTAIN, but the counter is still zero —
-> because my eligible decisions list only includes FOR. Autopilot
-> won't fire on a decision type I haven't explicitly opted in to.
-> That's the second safety layer."
-
-Click the **ABSTAIN** checkbox in the Eligible decisions row. The
-Autopilot summary updates:
+The editor re-runs the diff. The Autopilot summary updates:
 
 > Autopilot would currently vote on **1** of 48 cached proposals
 
-The AUTO badge appears next to the Code of Conduct row in the diff
+The **AUTO** badge appears next to the Code of Conduct row in the diff
 panel.
 
-> "Now drag the floor up to 0.95 — back to 0. The slider IS the
-> trust contract."
+> "Code of Conduct now evaluates to ABSTAIN with confidence 0.91. That
+> clears my 0.85 floor, so autopilot would fire. The badge in the diff
+> panel makes it visible per-proposal."
 
-(The Code of Conduct's confidence is around 0.91 — at floor 0.92+ it
-drops out, at 0.91 or below it qualifies. The badge appears and
-disappears as the slider crosses the threshold.)
+Drag the **Confidence floor** slider up from 0.85 → 0.95. The counter
+ticks back to 0 and the AUTO badge disappears.
 
-> "Every one of those slider positions, every checkbox, every
-> threshold — they all hash into the policy. When I save, that hash
-> binds the wallet to those exact authorization conditions. The audit
+> "0.91 falls below my new 0.95 floor. The slider IS the trust
+> contract — every position binds the wallet to those exact
+> authorization conditions on save. Slide back down to 0.85, the badge
+> returns."
+
+> "When I save, this slider position hashes into the policy. The audit
 > log can prove later: 'this autopilot vote happened because policy
-> hash 0x... was active and the proposal scored 0.91 confidence
-> against your 0.85 floor.'"
+> hash 0x... was active and the proposal scored 0.91 confidence against
+> your 0.85 floor.' Two knobs — one master switch, one confidence floor.
+> The policy itself decides FOR / AGAINST / ABSTAIN per proposal."
 
 (Optional: Save the policy here so ACT 5 can run live autopilot.
 Otherwise leave autopilot off and use ACT 5 only for single-proposal
@@ -481,13 +471,19 @@ allowlist gate, batch processing with rate limit) all work today. Adding
 the timer is a runtime config change, not a code change.
 
 **"What stops me from accidentally enabling broad autonomous voting?"**
-Three layers. (1) Autopilot defaults to `enabled: false` and decisions:
-`['FOR']` only — opting in to AGAINST or ABSTAIN requires explicit
-toggles. (2) The confidence floor defaults to 0.85 — most cached
-proposals do not clear that, so the editor's live counter shows 0 even
-after enabling. (3) The allowlist on the backend rejects any vote
-targeting a space outside the explicit DAO_SPACE + SUBMIT_ALLOWLIST set.
-A misconfigured policy cannot reach a non-allowlisted DAO.
+Three layers, all visible in the editor before save.
+(1) Autopilot defaults to `enabled: false` — flipping it on is a
+deliberate act, hashed into the policy.
+(2) The confidence floor defaults to 0.85 — most cached proposals do
+not clear that, so the editor's live counter shows 0 even after
+enabling. The slider lets the user dial up tighter.
+(3) Autopilot unconditionally skips MANUAL_REVIEW. The user's policy
+itself is the per-decision authorization — if a category should never
+autovote, the user marks it as MANUAL_REVIEW. There is no parallel
+"decisions" filter that could surprise.
+On the backend: the SUBMIT_ALLOWLIST gate rejects any vote targeting a
+space outside the explicit DAO_SPACE + fallback set. A misconfigured
+policy cannot reach a non-allowlisted DAO.
 
 **"Would you trust this with your real wallet?"**
 Yes. The system autovotes on the kinds of proposals my calibration clearly
@@ -546,7 +542,8 @@ rule id on each diff item.
 - [ ] Frontend trust ribbon shows "Attested in EigenCompute TEE".
 - [ ] SIWE sign-in completed at least once before the demo.
 - [ ] Hit "Reset demo" once; confirm Policy page shows version 1 of seeded
-      DEMO_PROFILE with autopilot.enabled=false.
+      DEMO_PROFILE; the Autopilot row in ProfileCard reads
+      "disabled · Confidence floor 0.85".
 - [ ] Editor first paint shows "48 past proposals" and zero flipped.
 - [ ] AttestationCard renders Hardware/Code/Image/Measurement/Evidence rows.
 - [ ] Run sign-then-verify on stage hardware; confirm signature recovers
