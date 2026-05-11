@@ -40,6 +40,7 @@ import {
   PolicyProfile as PolicyProfileSchema,
   compileProfileToRules,
   evaluate as evaluatePolicy,
+  isAutopilotEligible,
   type AnalysisForPolicy,
   type PolicyProfileT,
 } from './policy.js';
@@ -51,6 +52,7 @@ import {
   listAudit,
   appendAudit,
   listCachedAnalyses,
+  getCachedAnalysis,
   resetUserData,
   resetAndSeedUserData,
 } from './db.js';
@@ -71,6 +73,7 @@ import {
   hashJson,
   DECISION_BLOB_DOMAIN,
   DECISION_BLOB_TYPES,
+  signDecisionBlob,
   type DecisionBlobMessage,
   type SignedDecisionBlob,
 } from './decision-blob.js';
@@ -1403,6 +1406,257 @@ app.post(
     signature_error: signatureError,
   });
 });
+
+/**
+ * POST /pipeline/autopilot-run
+ *
+ * Batch entry point for autopilot. Frontend supplies a list of pre-fetched
+ * Snapshot proposals; backend looks each up in the cached-extraction store,
+ * evaluates against the user's saved policy, applies isAutopilotEligible,
+ * and (when dry_run is false) signs + submits the eligible items
+ * sequentially with a small inter-vote delay.
+ *
+ * Why cached-only extractions: live LLM calls in a batch would multiply the
+ * latency and the failure surface. The demo path always has cached
+ * extractions for the current corpus; live-active proposals from a fallback
+ * DAO that have not been pre-extracted are surfaced as not-eligible with
+ * the reason "no_cached_extraction" so the operator can see them.
+ *
+ * Body:
+ *   {
+ *     proposals: SnapshotProposalRaw[],
+ *     dry_run: boolean,           // when true, builds plan but does not submit
+ *     max_votes?: number,          // hard cap, default 10, max 25
+ *   }
+ *
+ * Response:
+ *   {
+ *     policy_hash: string,         // commits the autopilot config to a
+ *                                  // specific saved policy version
+ *     autopilot: AutopilotT,
+ *     plan: AutopilotPlanItem[],
+ *     dry_run: boolean,
+ *     submitted_count: number,
+ *     capped: boolean,             // true if eligible items > max_votes
+ *   }
+ */
+app.post(
+  '/pipeline/autopilot-run',
+  bodyLimit({ maxSize: 2 * 1024 * 1024 }), // 2 MB to fit ~50 raw Snapshot proposals
+  async (c) => {
+    let address: string;
+    try {
+      address = requireAuth(c);
+    } catch {
+      return c.json({ error: 'authentication required' }, 401);
+    }
+
+    let body: any;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+
+    const dryRun = body.dry_run === true;
+    const maxVotes = Math.min(Math.max(body.max_votes ?? 10, 1), 25);
+    const proposals = Array.isArray(body.proposals) ? (body.proposals as SnapshotProposalRaw[]) : [];
+
+    const user = findOrCreateUser(address);
+    const stored = getLatestProfile(user.id);
+    if (!stored) {
+      return c.json(
+        { error: 'no_profile', message: 'Save a policy before running autopilot.' },
+        409,
+      );
+    }
+    const profile = JSON.parse(stored.profile_json) as PolicyProfileT;
+    const policy = PolicyProfileSchema.parse(profile); // re-normalize so older saves get autopilot defaults
+    const rules = compileProfileToRules(policy);
+
+    // Live-submit gate: the user's saved policy must have autopilot.enabled.
+    // Dry-run runs regardless so the editor can preview "what WOULD happen
+    // if I enabled it" without re-saving.
+    if (!policy.autopilot.enabled && !dryRun) {
+      return c.json(
+        {
+          error: 'autopilot_disabled',
+          message:
+            'Your saved policy has autopilot disabled. Enable it in the editor and save before running autopilot live.',
+        },
+        400,
+      );
+    }
+
+    type PlanItem = {
+      proposal_id: string;
+      title: string | null;
+      space: string | null;
+      decision: 'FOR' | 'AGAINST' | 'ABSTAIN' | 'MANUAL_REVIEW' | null;
+      confidence: number | null;
+      eligible: boolean;
+      reason?: string;
+      submitted?: { ok: boolean; snapshot_url?: string; error?: string };
+    };
+
+    const plan: PlanItem[] = proposals.map((p) => {
+      const space = p.space?.id ?? null;
+      const cached = getCachedAnalysis(p.id, EXTRACTION_SCHEMA_VERSION);
+      if (!cached) {
+        return {
+          proposal_id: p.id,
+          title: p.title ?? null,
+          space,
+          decision: null,
+          confidence: null,
+          eligible: false,
+          reason: 'no_cached_extraction',
+        };
+      }
+      const analysis = JSON.parse(cached.analysis_json) as AnalysisForPolicy;
+      analysis.extraction_confidence = cached.extraction_confidence;
+      const evaluation = evaluatePolicy(analysis, policy, rules, {
+        id: p.id,
+        author_address: p.author,
+        space: space ?? undefined,
+      });
+      const eligible = isAutopilotEligible(evaluation, policy.autopilot);
+      let reason: string | undefined;
+      if (!eligible) {
+        if (evaluation.decision === 'MANUAL_REVIEW') reason = 'decision_manual_review';
+        else if (evaluation.confidence < policy.autopilot.min_confidence) reason = 'below_confidence_floor';
+        else if (
+          !policy.autopilot.decisions.includes(
+            evaluation.decision as 'FOR' | 'AGAINST' | 'ABSTAIN',
+          )
+        )
+          reason = 'decision_not_in_allowlist';
+        else reason = 'autopilot_disabled';
+      }
+      return {
+        proposal_id: p.id,
+        title: p.title ?? null,
+        space,
+        decision: evaluation.decision,
+        confidence: evaluation.confidence,
+        eligible,
+        reason,
+      };
+    });
+
+    if (dryRun) {
+      const eligibleCount = plan.filter((p) => p.eligible).length;
+      return c.json({
+        policy_hash: stored.hash,
+        autopilot: policy.autopilot,
+        plan,
+        dry_run: true,
+        submitted_count: 0,
+        capped: eligibleCount > maxVotes,
+      });
+    }
+
+    // Live submit path. Sign + submit eligible items sequentially with a
+    // 500ms inter-vote delay so a 10-vote batch does not look like a spike
+    // to Snapshot's sequencer. Stop at maxVotes and mark capped if we did.
+    const eligible = plan.filter((p) => p.eligible);
+    const willSubmit = eligible.slice(0, maxVotes);
+    const capped = eligible.length > maxVotes;
+    const acct = userWallet(address as `0x${string}`);
+    const userIdForAudit = user.id;
+    let submittedCount = 0;
+
+    for (let i = 0; i < willSubmit.length; i++) {
+      const item = willSubmit[i];
+      const original = proposals.find((p) => p.id === item.proposal_id)!;
+      // Re-grab cached for this proposal — already established above to exist.
+      const cached = getCachedAnalysis(item.proposal_id, EXTRACTION_SCHEMA_VERSION)!;
+      const analysis = JSON.parse(cached.analysis_json) as AnalysisForPolicy;
+      analysis.extraction_confidence = cached.extraction_confidence;
+      const evaluation = evaluatePolicy(analysis, policy, rules, {
+        id: item.proposal_id,
+        author_address: original.author,
+        space: item.space ?? undefined,
+      });
+      const choice = decisionToChoice(evaluation.decision);
+      if (choice === null) {
+        // Should never happen — eligibility already filters MANUAL_REVIEW.
+        item.submitted = { ok: false, error: 'no choice mapping for decision' };
+        continue;
+      }
+
+      // Allowlist gate per-proposal — defense-in-depth even though the
+      // frontend constrains the dropdown to allowed spaces.
+      const targetSpace = item.space ?? '';
+      if (!isSpaceAllowedForSubmit(targetSpace)) {
+        item.submitted = { ok: false, error: `space_not_allowed: ${targetSpace}` };
+        continue;
+      }
+
+      try {
+        // Sign decision blob first so the audit chain is complete even on
+        // submit failure.
+        await signDecisionBlob({
+          account: acct,
+          userAddress: address as `0x${string}`,
+          proposal: original,
+          policy,
+          rules,
+          analysis,
+          evaluation,
+          choice,
+          pipelineVersion: 'autopilot-1',
+        });
+
+        const envelope = await signVote({
+          account: acct,
+          space: targetSpace,
+          proposalId: item.proposal_id as `0x${string}`,
+          choice,
+          reason: `gov-agent autopilot v0.1: ${evaluation.decision} (engine ${evaluation.engine_version}, confidence ${evaluation.confidence.toFixed(2)})`,
+        });
+
+        const result = await submitVote(envelope);
+        auditVoteSubmission({
+          user_id: userIdForAudit,
+          space: targetSpace,
+          proposal: item.proposal_id,
+          choice,
+          from: envelope.address,
+          result,
+        });
+        if (result.ok) {
+          item.submitted = {
+            ok: true,
+            snapshot_url: `https://snapshot.org/#/${targetSpace}/proposal/${item.proposal_id}`,
+          };
+          submittedCount += 1;
+        } else {
+          item.submitted = { ok: false, error: result.error };
+        }
+      } catch (e) {
+        item.submitted = {
+          ok: false,
+          error: e instanceof Error ? e.message : String(e),
+        };
+      }
+
+      // Sleep between submissions; skip after the last one.
+      if (i < willSubmit.length - 1) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+
+    return c.json({
+      policy_hash: stored.hash,
+      autopilot: policy.autopilot,
+      plan,
+      dry_run: false,
+      submitted_count: submittedCount,
+      capped,
+    });
+  },
+);
 
 app.get('/attestation', async (c) => {
   let walletAddress: string | null = null;
