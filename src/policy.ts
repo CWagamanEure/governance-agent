@@ -588,6 +588,35 @@ export function evaluate(
 // Profile compilation — turn a PolicyProfile into a concrete rule list.
 // ---------------------------------------------------------------------------
 
+/**
+ * Pure predicate: given a policy evaluation and the user's autopilot block,
+ * return whether the system is authorized to auto-submit this vote without
+ * per-vote review.
+ *
+ * Eligible iff ALL of:
+ *   - autopilot.enabled is true (user has flipped the master switch)
+ *   - evaluation.decision is NOT MANUAL_REVIEW
+ *   - evaluation.decision is in autopilot.decisions (the explicit opt-in set)
+ *   - evaluation.confidence is >= autopilot.min_confidence (the floor)
+ *
+ * Boundary semantics: confidence equal to the floor IS eligible (>=, not >).
+ * Reasoning: the user picked the threshold deliberately; treating "exactly at
+ * the floor" as below-threshold would be surprising and would carve out a
+ * gray-area pixel-row in the slider UX.
+ */
+export function isAutopilotEligible(
+  evaluation: PolicyEvaluation,
+  autopilot: AutopilotT,
+): boolean {
+  if (!autopilot.enabled) return false;
+  if (evaluation.decision === 'MANUAL_REVIEW') return false;
+  if (!autopilot.decisions.includes(evaluation.decision as 'FOR' | 'AGAINST' | 'ABSTAIN')) {
+    return false;
+  }
+  if (evaluation.confidence < autopilot.min_confidence) return false;
+  return true;
+}
+
 export function compileProfileToRules(profileInput: PolicyProfileT): Rule[] {
   const profile = normalizeProfile(profileInput);
   const rules: Rule[] = [];

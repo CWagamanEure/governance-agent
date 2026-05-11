@@ -18,6 +18,7 @@
     "test:compiler": "tsx scripts/test-compiler.ts",
     "test:demo-peel": "tsx scripts/test-demo-peel.ts",
     "test:sign-verify": "tsx scripts/test-sign-verify.ts",
+    "test:autopilot": "tsx scripts/test-autopilot.ts",
     "pipeline": "tsx scripts/run-pipeline.ts"
   },
   "dependencies": {
