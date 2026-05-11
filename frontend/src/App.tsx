@@ -30,11 +30,14 @@ import { Policy } from './pages/Policy';
 type Tab = 'activity' | 'proposals' | 'policy';
 
 // Parse a comma-separated space list from a public env var. Same shape as
-// the helper in pages/Policy.tsx and the backend's parseSpaceList — kept
-// inline here to avoid a shared util file for a 4-line function.
+// the helper in pages/Policy.tsx and the backend's parseSpaceList. Trims
+// + lowercases so every consumer compares space ids in the canonical
+// form the backend writes everywhere (SUBMIT_ALLOWLIST, /profile save
+// path, cron/autopilot intersections). Kept inline to avoid a shared
+// util file for a 5-line function.
 function parseSpaceList(raw: string | null | undefined): string[] {
   if (!raw) return [];
-  return raw.split(',').map((s) => s.trim()).filter(Boolean);
+  return raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
 }
 
 function useHashRoute(): string {
@@ -207,7 +210,9 @@ function Dashboard({ tab }: { tab: Tab }) {
   // the allowlisted DAOs (Activity, Proposals, Policy → SignAndVerifyCard,
   // Policy → AutopilotRunCard). publicEnv exposes the primary DAO directly
   // and the comma-separated fallback list.
-  const primaryDaoSpace = info?.env?.DAO_SPACE_PUBLIC ?? null;
+  const primaryDaoSpace = info?.env?.DAO_SPACE_PUBLIC
+    ? info.env.DAO_SPACE_PUBLIC.trim().toLowerCase()
+    : null;
   const fallbackDaoSpaces = parseSpaceList(info?.env?.SNAPSHOT_FALLBACK_SPACES_PUBLIC);
 
   return (

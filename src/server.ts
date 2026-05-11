@@ -737,9 +737,26 @@ app.post('/profile', async (c) => {
     return c.json({ error: 'invalid profile', issues: parsed.error.issues }, 400);
   }
 
+  // Normalize space ids before persisting. The editor passes through whatever
+  // casing the env / UI rendered, but downstream intersections (cron, autopilot)
+  // compare against the lowercased SUBMIT_ALLOWLIST. Lowercasing at the save
+  // boundary gives us a single canonical form across reads.
+  const normalizedProfile = {
+    ...parsed.data,
+    followed_spaces: Array.isArray(parsed.data.followed_spaces)
+      ? Array.from(
+          new Set(
+            parsed.data.followed_spaces
+              .map((s: string) => s.trim().toLowerCase())
+              .filter(Boolean),
+          ),
+        )
+      : [],
+  };
+
   const user = findOrCreateUser(address);
-  const rules = compileProfileToRules(parsed.data);
-  const saved = saveProfile({ user_id: user.id, profile: parsed.data, rules });
+  const rules = compileProfileToRules(normalizedProfile);
+  const saved = saveProfile({ user_id: user.id, profile: normalizedProfile, rules });
 
   return c.json({
     user: { id: user.id, eth_address: user.eth_address },

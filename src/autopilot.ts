@@ -173,8 +173,15 @@ export async function runAutopilotBatch(args: AutopilotBatchArgs): Promise<Autop
   // recurring cron tick re-attempting a vote the user (or a prior
   // tick) has already submitted. The audit chain is the source of
   // truth for submitted votes; this query reads it directly.
+  //
+  // followedSet is lowercased to match the canonical form written at
+  // the /profile save boundary AND the lowercased actualSpace below.
+  // Defense in depth: a profile saved by an older code path (before
+  // F1 normalization) could still have mixed-case entries.
   const followedSet = new Set<string>(
-    Array.isArray(profile.followed_spaces) ? profile.followed_spaces : [],
+    Array.isArray(profile.followed_spaces)
+      ? profile.followed_spaces.map((s) => s.toLowerCase())
+      : [],
   );
   const followedFilterActive = followedSet.size > 0;
   const alreadyVoted = getSubmittedProposalIdsForUser(userId);

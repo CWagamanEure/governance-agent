@@ -5,11 +5,19 @@
  * module) can import without creating a circular dep with server.ts.
  */
 
-function normalizeSpace(s: string): string {
+/**
+ * Canonical form for Snapshot space ids. Lowercased + trimmed.
+ * Snapshot itself returns ids lowercase in GraphQL responses, but the
+ * env / UI layers don't always honor that — operator typos like
+ * SUBMIT_ALLOWLIST=Arbitrum.eth would silently break every
+ * intersection if we relied on string equality. Every code path that
+ * compares space ids should normalize through this helper first.
+ */
+export function normalizeSpace(s: string): string {
   return s.trim().toLowerCase();
 }
 
-function parseSpaceList(raw: string | undefined): string[] {
+export function parseSpaceList(raw: string | undefined): string[] {
   if (!raw) return [];
   return raw.split(',').map(normalizeSpace).filter(Boolean);
 }

@@ -20,11 +20,14 @@ type AuthState =
   | { status: 'anonymous' }
   | { status: 'authed'; address: string };
 
-// Mirror of src/server.ts parseSpaceList. Comma-separated, trimmed,
-// filters empties. Returns [] for undefined/null input.
+// Mirror of src/submit-allowlist.ts parseSpaceList. Comma-separated,
+// trimmed + lowercased to match the canonical space-id form the
+// backend uses everywhere (SUBMIT_ALLOWLIST is normalized this way,
+// and /profile save lowercases followed_spaces). Returns [] for
+// undefined/null input.
 function parseSpaceList(raw: string | null | undefined): string[] {
   if (!raw) return [];
-  return raw.split(',').map((s) => s.trim()).filter(Boolean);
+  return raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
 }
 
 export function Policy({
@@ -78,7 +81,9 @@ export function Policy({
   const token = getStoredToken();
 
   if (editing && token) {
-    const primarySpace = publicEnv?.DAO_SPACE_PUBLIC ?? null;
+    const primarySpace = publicEnv?.DAO_SPACE_PUBLIC
+      ? publicEnv.DAO_SPACE_PUBLIC.trim().toLowerCase()
+      : null;
     const fallbackSpaces = parseSpaceList(publicEnv?.SNAPSHOT_FALLBACK_SPACES_PUBLIC);
     const allowlistedSpaces = [
       ...(primarySpace ? [primarySpace] : []),
@@ -120,7 +125,9 @@ export function Policy({
           <SignAndVerifyCard
             token={token}
             profile={profile.profile}
-            daoSpace={publicEnv?.DAO_SPACE_PUBLIC ?? null}
+            daoSpace={publicEnv?.DAO_SPACE_PUBLIC
+              ? publicEnv.DAO_SPACE_PUBLIC.trim().toLowerCase()
+              : null}
             fallbackSpaces={parseSpaceList(
               publicEnv?.SNAPSHOT_FALLBACK_SPACES_PUBLIC,
             )}
@@ -132,7 +139,9 @@ export function Policy({
           <AutopilotRunCard
             token={token}
             profile={profile.profile}
-            daoSpace={publicEnv?.DAO_SPACE_PUBLIC ?? null}
+            daoSpace={publicEnv?.DAO_SPACE_PUBLIC
+              ? publicEnv.DAO_SPACE_PUBLIC.trim().toLowerCase()
+              : null}
             fallbackSpaces={parseSpaceList(
               publicEnv?.SNAPSHOT_FALLBACK_SPACES_PUBLIC,
             )}

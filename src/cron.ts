@@ -131,7 +131,13 @@ async function runPollTick(): Promise<void> {
         tick.errors.push({ user_id: userRow.user_id, message: `profile_parse_failed: ${message}` });
         continue;
       }
-      const followed = Array.isArray(profile.followed_spaces) ? profile.followed_spaces : [];
+      // Lowercase the follow list to match the canonical form in the
+      // allowlist (submit-allowlist.ts normalizes via normalizeSpace).
+      // F1 normalizes at save time too, but defense-in-depth: a profile
+      // saved before F1 could still have mixed-case entries.
+      const followed = (
+        Array.isArray(profile.followed_spaces) ? profile.followed_spaces : []
+      ).map((s) => s.toLowerCase());
       const scanSpaces = followed.filter((s) => allowlist.includes(s));
       if (scanSpaces.length === 0) continue; // nothing to do for this user
 
