@@ -1,8 +1,14 @@
 /**
- * Proposals page — list of proposals in the configured DAO with the
- * agent's recommendation per row. Visible to both authed and anonymous
- * users. Anonymous users get a clearly labeled default-policy preview;
- * connected users must configure a policy before recommendations run.
+ * Proposals page — list of active proposals across every allowlisted DAO,
+ * with the agent's recommendation per row. Visible to both authed and
+ * anonymous users. Anonymous users get a clearly labeled default-policy
+ * preview; connected users must configure a policy before recommendations
+ * run.
+ *
+ * Multi-DAO: scans the primary DAO + every fallback space in parallel
+ * (Promise.allSettled, per-space rejections do not block others), then
+ * caps the total number of rendered cards to keep live LLM extraction
+ * cost bounded.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -14,18 +20,16 @@ import {
 } from '../api';
 import { getStoredToken } from '../lib/auth';
 import { suggestedVoteLabel, suggestedVoteMeta } from '../lib/decision';
-import { FEATURED } from '../data';
+import { DaoBadge } from '../DaoBadge';
 import { Card, ConnectGate, EmptyState, SectionHeading } from './Activity';
 
-// Capped on purpose. Each rendered ProposalCard kicks off an LLM extraction
-// for any proposal not already cached. 3 × ~$0.03 = ~$0.09 per page load
-// is the worst case while the gateway is on direct Anthropic for local dev.
-const ACTIVE_LIMIT = 3;
-const DAO_SPACE = 'arbitrumfoundation.eth';
-
-const CHOICE_LABELS: Record<number, 'FOR' | 'AGAINST' | 'ABSTAIN'> = {
-  1: 'FOR', 2: 'AGAINST', 3: 'ABSTAIN',
-};
+// Per-space cap on how many active proposals we scan, plus a total cap on
+// how many cards we actually render. Each rendered ProposalCard kicks off
+// an LLM extraction for any proposal not already cached, so total-cap is
+// what bounds page-load cost. With 4 allowlisted DAOs and these defaults,
+// worst case is 4 × ~$0.03 = ~$0.12 per page load.
+const ACTIVE_LIMIT_PER_SPACE = 3;
+const TOTAL_DISPLAY_CAP = 4;
 
 // Match the shape Activity writes to localStorage. We pull submission too
 // so the badge can distinguish "signed but not submitted" from "voted on
@@ -60,6 +64,8 @@ type AuthState =
   | { status: 'anonymous' }
   | { status: 'authed'; address: string };
 
+type ActiveItem = { space: string; id: string };
+
 export function Proposals({
   auth,
   hasProfile,
@@ -67,6 +73,8 @@ export function Proposals({
   onSignIn,
   demoLivePending,
   onLiveTeeRun,
+  daoSpace,
+  fallbackSpaces,
 }: {
   auth: AuthState;
   hasProfile: boolean;
@@ -74,38 +82,60 @@ export function Proposals({
   onSignIn: () => void;
   demoLivePending?: boolean;
   onLiveTeeRun?: () => void;
+  daoSpace: string | null;
+  fallbackSpaces: string[];
 }) {
-  const [activeIds, setActiveIds] = useState<string[] | null>(null);
+  const [activeItems, setActiveItems] = useState<ActiveItem[] | null>(null);
   const [activeError, setActiveError] = useState<string | null>(null);
-  const [selectedDemoId, setSelectedDemoId] = useState(FEATURED[0]?.id ?? '');
 
+  // Live-fetch active proposals across primary + every fallback space in
+  // parallel. Per-space errors are isolated (.catch returns []) so one
+  // slow or broken space does not blank the page.
   useEffect(() => {
-    fetchActiveProposals(DAO_SPACE, ACTIVE_LIMIT)
-      .then((list) => setActiveIds(list.map((p) => p.id)))
-      .catch((e) => {
-        setActiveError(String(e));
-        setActiveIds([]);
-      });
-  }, []);
-
-  // While loading, fall back to the FEATURED list so the page doesn't flash
-  // empty. After load: prefer live active proposals; if Snapshot returns
-  // none, surface the FEATURED list with a clear note.
-  const useActive = activeIds !== null && activeIds.length > 0;
-  const baseIds: { id: string; analysis?: any }[] = useActive
-    ? activeIds!.map((id) => ({ id }))
-    : FEATURED;
-  const selectedDemo = FEATURED.find((p) => p.id === selectedDemoId);
-  const idsToRender: { id: string; analysis?: any }[] = selectedDemo
-    ? [
-        selectedDemo,
-        ...baseIds.filter((p) => p.id !== selectedDemo.id),
-      ]
-    : baseIds;
+    let cancelled = false;
+    (async () => {
+      const spacesToScan = [
+        ...(daoSpace ? [daoSpace] : []),
+        ...fallbackSpaces.filter((s) => s !== daoSpace),
+      ];
+      if (spacesToScan.length === 0) {
+        if (!cancelled) setActiveItems([]);
+        return;
+      }
+      try {
+        const perSpace = await Promise.all(
+          spacesToScan.map((space) =>
+            fetchActiveProposals(space, ACTIVE_LIMIT_PER_SPACE)
+              .then((items) => items.map((p) => ({ space, id: p.id })))
+              .catch(() => [] as ActiveItem[]),
+          ),
+        );
+        if (cancelled) return;
+        // Round-robin across spaces so the first N rendered cards aren't
+        // all from the same DAO. Cap to TOTAL_DISPLAY_CAP to bound cost.
+        const interleaved: ActiveItem[] = [];
+        const maxPerSpace = Math.max(...perSpace.map((p) => p.length), 0);
+        for (let i = 0; i < maxPerSpace; i++) {
+          for (const slot of perSpace) {
+            if (slot[i]) interleaved.push(slot[i]);
+            if (interleaved.length >= TOTAL_DISPLAY_CAP) break;
+          }
+          if (interleaved.length >= TOTAL_DISPLAY_CAP) break;
+        }
+        setActiveItems(interleaved);
+      } catch (e: any) {
+        if (!cancelled) {
+          setActiveError(e?.message ?? String(e));
+          setActiveItems([]);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [daoSpace, fallbackSpaces.join(',')]);
 
   // Pull recent-activity entries for the authed user (if any) so each
   // ProposalCard can show "you signed X" if the user already acted on it
-  // via the Activity tab. Read on mount; this is purely cosmetic.
+  // via the Activity tab.
   const userAddress = auth.status === 'authed' ? auth.address : null;
   const recommendationsEnabled = auth.status !== 'authed' || (profileLoaded && hasProfile);
   const recommendationMode =
@@ -119,6 +149,14 @@ export function Proposals({
     return map;
   }, [userAddress]);
 
+  const scannedSpaces = useMemo(
+    () => [
+      ...(daoSpace ? [daoSpace] : []),
+      ...fallbackSpaces.filter((s) => s !== daoSpace),
+    ],
+    [daoSpace, fallbackSpaces],
+  );
+
   if (auth.status === 'anonymous') {
     return (
       <>
@@ -130,18 +168,17 @@ export function Proposals({
 
         <SectionHeading>Live preview</SectionHeading>
         <ProposalsListNote
-          useActive={useActive}
-          activeIds={activeIds}
+          activeItems={activeItems}
           activeError={activeError}
           recommendationMode={recommendationMode}
+          scannedSpaces={scannedSpaces}
         />
-        <DemoShortcuts selectedId={selectedDemoId} onSelect={setSelectedDemoId} />
         <div className="proposals">
-          {idsToRender.map((p, i) => (
+          {(activeItems ?? []).map((p, i) => (
             <ProposalCard
-              key={p.id}
+              key={`${p.space}:${p.id}`}
               proposalId={p.id}
-              bundledAnalysis={p.analysis}
+              space={p.space}
               authed={false}
               recommendationsEnabled={recommendationsEnabled}
               userSigned={null}
@@ -172,18 +209,17 @@ export function Proposals({
         </Card>
       )}
       <ProposalsListNote
-        useActive={useActive}
-        activeIds={activeIds}
+        activeItems={activeItems}
         activeError={activeError}
         recommendationMode={recommendationMode}
+        scannedSpaces={scannedSpaces}
       />
-      <DemoShortcuts selectedId={selectedDemoId} onSelect={setSelectedDemoId} />
       <div className="proposals">
-        {idsToRender.map((p, i) => (
+        {(activeItems ?? []).map((p, i) => (
           <ProposalCard
-            key={p.id}
+            key={`${p.space}:${p.id}`}
             proposalId={p.id}
-            bundledAnalysis={p.analysis}
+            space={p.space}
             authed={auth.status === 'authed'}
             recommendationsEnabled={recommendationsEnabled}
             userSigned={userSignedById[p.id] ?? null}
@@ -196,71 +232,54 @@ export function Proposals({
   );
 }
 
-function DemoShortcuts({
-  selectedId,
-  onSelect,
-}: {
-  selectedId: string;
-  onSelect: (id: string) => void;
-}) {
-  return (
-    <div className="demo-shortcuts" aria-label="Demo proposal shortcuts">
-      <span className="dft-label">Demo proposals</span>
-      {FEATURED.map((p) => (
-        <button
-          key={p.id}
-          className={`demo-chip ${selectedId === p.id ? 'active' : ''}`}
-          onClick={() => onSelect(p.id)}
-        >
-          <span>{p.label ?? p.id.slice(0, 10)}</span>
-          {p.tag && <code>{p.tag}</code>}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 function ProposalsListNote({
-  useActive,
-  activeIds,
+  activeItems,
   activeError,
   recommendationMode,
+  scannedSpaces,
 }: {
-  useActive: boolean;
-  activeIds: string[] | null;
+  activeItems: ActiveItem[] | null;
   activeError: string | null;
   recommendationMode: 'default' | 'saved' | 'paused';
+  scannedSpaces: string[];
 }) {
-  if (activeIds === null) {
+  if (scannedSpaces.length === 0) {
     return (
       <p className="muted tiny" style={{ marginTop: -4, marginBottom: 16 }}>
-        Looking for active proposals on {DAO_SPACE}…
+        No DAOs configured. Set DAO_SPACE_PUBLIC (and optionally SNAPSHOT_FALLBACK_SPACES_PUBLIC) to scan for active proposals.
+      </p>
+    );
+  }
+  if (activeItems === null) {
+    return (
+      <p className="muted tiny" style={{ marginTop: -4, marginBottom: 16 }}>
+        Looking for active proposals across {scannedSpaces.length} DAO{scannedSpaces.length === 1 ? '' : 's'}…
       </p>
     );
   }
   if (activeError) {
     return (
       <p className="muted tiny" style={{ marginTop: -4, marginBottom: 16 }}>
-        Snapshot fetch failed ({activeError}). Showing curated featured proposals instead.
+        Snapshot fetch failed ({activeError}).
       </p>
     );
   }
-  if (useActive) {
-    const recommendationCopy =
-      recommendationMode === 'paused'
-        ? 'Recommendations are paused until your policy is configured; live TEE extraction can still be run manually.'
-        : recommendationMode === 'default'
-          ? 'Each card runs the pipeline against the default preview policy.'
-          : 'Each card runs the pipeline against your saved policy.';
+  if (activeItems.length === 0) {
     return (
       <p className="muted tiny" style={{ marginTop: -4, marginBottom: 16 }}>
-        Showing {activeIds!.length} live active proposal{activeIds!.length === 1 ? '' : 's'} on {DAO_SPACE} (capped at {ACTIVE_LIMIT}). {recommendationCopy}
+        No live active proposals across the {scannedSpaces.length} configured DAO{scannedSpaces.length === 1 ? '' : 's'} right now.
       </p>
     );
   }
+  const recommendationCopy =
+    recommendationMode === 'paused'
+      ? 'Recommendations are paused until your policy is configured; live TEE extraction can still be run manually.'
+      : recommendationMode === 'default'
+        ? 'Each card runs the pipeline against the default preview policy.'
+        : 'Each card runs the pipeline against your saved policy.';
   return (
     <p className="muted tiny" style={{ marginTop: -4, marginBottom: 16 }}>
-      No live active proposals on {DAO_SPACE} right now. Showing curated featured proposals so the page isn't empty.
+      Showing {activeItems.length} live active proposal{activeItems.length === 1 ? '' : 's'} across {scannedSpaces.length} DAO{scannedSpaces.length === 1 ? '' : 's'} (capped at {TOTAL_DISPLAY_CAP}). {recommendationCopy}
     </p>
   );
 }
@@ -271,7 +290,7 @@ function ProposalsListNote({
 
 function ProposalCard({
   proposalId,
-  bundledAnalysis,
+  space,
   authed,
   recommendationsEnabled,
   userSigned,
@@ -279,7 +298,7 @@ function ProposalCard({
   onLiveTeeRun,
 }: {
   proposalId: string;
-  bundledAnalysis?: any;
+  space: string;
   authed: boolean;
   recommendationsEnabled: boolean;
   userSigned: MinimalActivityEntry | null;
@@ -308,13 +327,12 @@ function ProposalCard({
     setLoading(true);
     runPipeline({
       proposal,
-      analysis: bundledAnalysis,
       token: authed ? getStoredToken() : null,
     })
       .then((r) => setPipeline(r))
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
-  }, [proposal, pipeline, bundledAnalysis, authed, recommendationsEnabled]);
+  }, [proposal, pipeline, authed, recommendationsEnabled]);
 
   async function runLiveInTee() {
     if (!proposal) return;
@@ -350,7 +368,7 @@ function ProposalCard({
     try {
       const r = await runPipeline({
         proposal,
-        analysis: liveRun?.analysis ?? bundledAnalysis,
+        analysis: liveRun?.analysis,
         sign: true,
         token: authed ? getStoredToken() : null,
       });
@@ -399,10 +417,18 @@ function ProposalCard({
     }
   }
 
+  // The multi-DAO scan threads the canonical space through `space`. Snapshot
+  // also returns proposal.space?.id which serves as a fallback in case the
+  // prop ever drifts.
+  const badgeSpace = space || proposal.space?.id || '';
+
   return (
     <article className="prop-card">
       <header className="prop-head">
-        <h3>{proposal.title ?? proposalId}</h3>
+        <h3>
+          {badgeSpace && <DaoBadge space={badgeSpace} />}{' '}
+          {proposal.title ?? proposalId}
+        </h3>
         <div className="prop-head-pills">
           {actionPill && (
             <span className="prop-signed" title={actionPill.title}>

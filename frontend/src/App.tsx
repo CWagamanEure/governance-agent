@@ -270,6 +270,8 @@ function Dashboard({ tab }: { tab: Tab }) {
             onSignIn={handleSignIn}
             demoLivePending={!demoProgress.liveInferenceRun}
             onLiveTeeRun={markLiveInferenceRun}
+            daoSpace={primaryDaoSpace}
+            fallbackSpaces={fallbackDaoSpaces}
           />
         )}
 
