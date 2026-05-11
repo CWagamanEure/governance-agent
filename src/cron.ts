@@ -54,11 +54,19 @@ const state: {
   /**
    * Per-user count of consecutive wallet_unavailable failures (M6).
    * After WALLET_FAIL_THRESHOLD consecutive failures we skip the user
-   * for the rest of the process lifetime — MNEMONIC issues never
-   * self-heal, so retrying every interval just spams the audit log.
+   * until they save a NEW profile version. MNEMONIC misconfiguration
+   * by itself does not self-heal, but re-saving the profile is a
+   * reasonable user-driven recovery signal — also covers the case
+   * where the operator fixes the MNEMONIC and the affected users
+   * touch their policy.
+   *
+   * Stored as Map<user_id, skippedAtProfileVersion>. On next encounter
+   * we compare against the user's CURRENT profile version; a strictly
+   * higher version means the user has saved since the skip and we
+   * should recover. R9.
    */
   walletFailures: Map<string, number>;
-  permanentlySkipped: Set<string>;
+  permanentlySkipped: Map<string, number>;
 } = {
   intervalHandle: null,
   timeoutHandle: null,
@@ -68,7 +76,7 @@ const state: {
   lastTick: null,
   inFlight: false,
   walletFailures: new Map(),
-  permanentlySkipped: new Set(),
+  permanentlySkipped: new Map(),
 };
 
 const WALLET_FAIL_THRESHOLD = 3;
@@ -146,8 +154,28 @@ async function runPollTick(): Promise<void> {
     // and run the autopilot batch. We do users sequentially so the
     // LLM-extraction load is predictable (no fan-out across users).
     for (const userRow of users) {
-      // M6: skip users we've already given up on this process lifetime.
-      if (state.permanentlySkipped.has(userRow.user_id)) continue;
+      // M6 + R9: skip users whose wallet_unavailable streak crossed
+      // the threshold, UNLESS they have saved a newer profile version
+      // since the skip — a re-save is the natural recovery signal.
+      const skippedAtVersion = state.permanentlySkipped.get(userRow.user_id);
+      if (typeof skippedAtVersion === 'number') {
+        if (userRow.version > skippedAtVersion) {
+          // User saved a new version after we gave up; reset state
+          // so the next batch attempts fresh.
+          state.permanentlySkipped.delete(userRow.user_id);
+          state.walletFailures.delete(userRow.user_id);
+          appendAudit({
+            event_type: 'autopilot_user_skip_recovered',
+            user_id: userRow.user_id,
+            payload: {
+              previous_skip_at_version: skippedAtVersion,
+              recovered_at_version: userRow.version,
+            },
+          });
+        } else {
+          continue;
+        }
+      }
 
       let profile: PolicyProfileT;
       try {
@@ -226,7 +254,7 @@ async function runPollTick(): Promise<void> {
           const next = prev + 1;
           state.walletFailures.set(userRow.user_id, next);
           if (next >= WALLET_FAIL_THRESHOLD) {
-            state.permanentlySkipped.add(userRow.user_id);
+            state.permanentlySkipped.set(userRow.user_id, userRow.version);
             console.warn(
               `[cron] user ${userRow.user_id} hit wallet_unavailable ${next} times; ` +
                 `permanently skipping for this process lifetime`,
