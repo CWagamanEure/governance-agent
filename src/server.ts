@@ -1815,6 +1815,31 @@ app.post(
           else if (evaluation.confidence < effectiveAutopilot.min_confidence) reason = 'below_confidence_floor';
           else reason = 'autopilot_disabled';
         }
+        // Audit log entry for proposals the agent extracted on its own
+        // initiative (live LLM call inside the TEE). Cache hits don't
+        // get logged here because they don't represent autonomous work
+        // by the agent; budget-skipped items don't either since no
+        // extraction happened. The audit chain proves later: "the
+        // system saw this proposal, paid for the extraction, and
+        // produced this score under this policy hash."
+        if (result.extraction.source === 'live') {
+          appendAudit({
+            event_type: 'autopilot_extracted_proposal',
+            user_id: user.id,
+            ref_id: p.id,
+            payload: {
+              space,
+              title: p.title ?? null,
+              decision: evaluation.decision,
+              confidence: evaluation.confidence,
+              eligible,
+              dry_run: dryRun,
+              policy_hash: stored.hash,
+              extraction_route: result.extraction.route,
+              extraction_model: result.extraction.modelId,
+            },
+          });
+        }
         return {
           proposal_id: p.id,
           title: p.title ?? null,
