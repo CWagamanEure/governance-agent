@@ -62,13 +62,12 @@ export const DEMO_PROFILE: PolicyProfileT = {
     require_milestones_for_treasury: true,
   },
   // Autopilot OFF in the seeded profile — the demo turns it on live in
-  // ACT 4.5 to show the slider + diff-badging beat. Conservative defaults
-  // (FOR-only, 0.85 confidence floor) so a reviewer who clicks Save without
-  // tweaking the slider does not accidentally enable broad auto-voting.
+  // ACT 4.5 to show the slider beat. Conservative 0.85 floor so a reviewer
+  // who toggles on without tweaking the slider only gets the highest-
+  // signal autovotes.
   autopilot: {
     enabled: false,
     min_confidence: 0.85,
-    decisions: ['FOR'],
   },
   stated_values: [
     'I support small accountable grants for ecosystem work — under $500k, with milestones and reporting.',

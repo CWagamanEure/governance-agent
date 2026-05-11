@@ -66,28 +66,29 @@ export const HardRules = z.object({
 });
 export type HardRulesT = z.infer<typeof HardRules>;
 
-const AutopilotDecision = z.enum(['FOR', 'AGAINST', 'ABSTAIN']);
-
 /**
  * Autopilot block: the user's authorization for the system to vote on their
- * behalf without per-vote review, gated by a confidence floor and a list of
- * eligible decision types.
+ * behalf without per-vote review, gated only by an overall confidence floor
+ * and the underlying policy itself.
  *
- * This block is hashed into the policy hash and audit-logged on save, so the
- * user is cryptographically authorizing autopilot at exactly these settings.
- * Any vote cast under autopilot references the same policy hash, making the
- * authority chain auditable forever.
+ * Hashed into the policy hash and audit-logged on save, so the user is
+ * cryptographically authorizing autopilot at exactly these settings.
  *
- * Defaults are conservative:
- *   - enabled: false (no surprise autonomy on first save)
- *   - min_confidence: 0.85 (only high-confidence decisions auto-vote)
- *   - decisions: ['FOR'] only (auto-AGAINST and auto-ABSTAIN require an
- *     explicit opt-in; the user has to think before broadening scope)
+ * Two knobs only:
+ *   - enabled: false by default (no surprise autonomy on first save)
+ *   - min_confidence: 0.85 default (high-signal decisions only)
+ *
+ * The eligibility predicate intentionally does NOT filter by decision type
+ * (FOR / AGAINST / ABSTAIN). The policy itself already encodes the user's
+ * intent — if a rule produces ABSTAIN, the user wrote that rule and meant
+ * it. Adding a parallel decisions filter would double-gate the same intent
+ * and confuse the trust contract. To prevent autopilot on a category, the
+ * user should set the policy to MANUAL_REVIEW for that category — the
+ * predicate skips MANUAL_REVIEW unconditionally.
  */
 export const Autopilot = z.object({
   enabled: z.boolean().default(false),
   min_confidence: z.number().min(0).max(1).default(0.85),
-  decisions: z.array(AutopilotDecision).default(['FOR']),
 });
 export type AutopilotT = z.infer<typeof Autopilot>;
 
@@ -114,7 +115,6 @@ export const PolicyProfile = z.object({
   autopilot: Autopilot.default({
     enabled: false,
     min_confidence: 0.85,
-    decisions: ['FOR'],
   }),
   stated_values: z.array(z.string()).default([]),
 });
@@ -595,9 +595,14 @@ export function evaluate(
  *
  * Eligible iff ALL of:
  *   - autopilot.enabled is true (user has flipped the master switch)
- *   - evaluation.decision is NOT MANUAL_REVIEW
- *   - evaluation.decision is in autopilot.decisions (the explicit opt-in set)
+ *   - evaluation.decision is NOT MANUAL_REVIEW (the policy itself blocks)
  *   - evaluation.confidence is >= autopilot.min_confidence (the floor)
+ *
+ * The predicate deliberately does NOT filter by decision direction
+ * (FOR/AGAINST/ABSTAIN). The user's policy already encodes per-decision
+ * intent — if a rule produces ABSTAIN, that's an explicit choice the user
+ * made. To gate autopilot on a category, set that category's policy to
+ * MANUAL_REVIEW; the second condition catches it.
  *
  * Boundary semantics: confidence equal to the floor IS eligible (>=, not >).
  * Reasoning: the user picked the threshold deliberately; treating "exactly at
@@ -610,9 +615,6 @@ export function isAutopilotEligible(
 ): boolean {
   if (!autopilot.enabled) return false;
   if (evaluation.decision === 'MANUAL_REVIEW') return false;
-  if (!autopilot.decisions.includes(evaluation.decision as 'FOR' | 'AGAINST' | 'ABSTAIN')) {
-    return false;
-  }
   if (evaluation.confidence < autopilot.min_confidence) return false;
   return true;
 }
@@ -1016,7 +1018,6 @@ export const DEFAULT_PROFILE: PolicyProfileT = {
   autopilot: {
     enabled: false,
     min_confidence: 0.85,
-    decisions: ['FOR'],
   },
   stated_values: [],
 };

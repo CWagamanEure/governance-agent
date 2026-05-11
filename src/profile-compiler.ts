@@ -251,7 +251,6 @@ function fallbackCompile(input: CompileInput): PolicyProfileT {
       // explicitly from the editor after seeing the diff at their threshold.
       enabled: false,
       min_confidence: 0.85,
-      decisions: ['FOR'],
     },
     stated_values: stated,
   };

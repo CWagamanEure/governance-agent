@@ -1559,12 +1559,6 @@ app.post(
         if (!eligible) {
           if (evaluation.decision === 'MANUAL_REVIEW') reason = 'decision_manual_review';
           else if (evaluation.confidence < effectiveAutopilot.min_confidence) reason = 'below_confidence_floor';
-          else if (
-            !effectiveAutopilot.decisions.includes(
-              evaluation.decision as 'FOR' | 'AGAINST' | 'ABSTAIN',
-            )
-          )
-            reason = 'decision_not_in_allowlist';
           else reason = 'autopilot_disabled';
         }
         return {

@@ -26,7 +26,6 @@ function ap(overrides: Partial<AutopilotT> = {}): AutopilotT {
   return {
     enabled: true,
     min_confidence: 0.85,
-    decisions: ['FOR'],
     ...overrides,
   };
 }
@@ -39,37 +38,31 @@ const cases: Array<{ label: string; expected: boolean; e: PolicyEvaluation; a: A
     e: ev('FOR', 0.99),
     a: ap({ enabled: false }),
   },
-  // MANUAL_REVIEW is always blocked
+  // MANUAL_REVIEW is always blocked — even at full confidence
   {
-    label: 'MANUAL_REVIEW with FOR allowlisted → not eligible',
+    label: 'MANUAL_REVIEW at 0.99 confidence → not eligible',
     expected: false,
     e: ev('MANUAL_REVIEW', 0.99),
-    a: ap({ decisions: ['FOR', 'AGAINST', 'ABSTAIN'] }),
+    a: ap(),
   },
-  // Decision allowlist
+  // Predicate respects whatever decision the policy produced
   {
-    label: 'FOR allowed, decision=FOR, confidence above floor → eligible',
+    label: 'decision=FOR above floor → eligible',
     expected: true,
     e: ev('FOR', 0.9),
-    a: ap({ decisions: ['FOR'], min_confidence: 0.85 }),
+    a: ap({ min_confidence: 0.85 }),
   },
   {
-    label: 'FOR-only allowlist, decision=AGAINST → not eligible',
-    expected: false,
-    e: ev('AGAINST', 0.99),
-    a: ap({ decisions: ['FOR'] }),
-  },
-  {
-    label: 'AGAINST in allowlist, decision=AGAINST, above floor → eligible',
+    label: 'decision=AGAINST above floor → eligible (no decisions filter)',
     expected: true,
     e: ev('AGAINST', 0.9),
-    a: ap({ decisions: ['FOR', 'AGAINST'] }),
+    a: ap({ min_confidence: 0.85 }),
   },
   {
-    label: 'ABSTAIN not in allowlist → not eligible',
-    expected: false,
-    e: ev('ABSTAIN', 0.99),
-    a: ap({ decisions: ['FOR', 'AGAINST'] }),
+    label: 'decision=ABSTAIN above floor → eligible (no decisions filter)',
+    expected: true,
+    e: ev('ABSTAIN', 0.9),
+    a: ap({ min_confidence: 0.85 }),
   },
   // Confidence floor
   {
@@ -102,13 +95,6 @@ const cases: Array<{ label: string; expected: boolean; e: PolicyEvaluation; a: A
     expected: true,
     e: ev('FOR', 0),
     a: ap({ min_confidence: 0 }),
-  },
-  // Empty decisions list = nothing eligible regardless of confidence
-  {
-    label: 'decisions=[] → not eligible',
-    expected: false,
-    e: ev('FOR', 1.0),
-    a: ap({ decisions: [] }),
   },
 ];
 
