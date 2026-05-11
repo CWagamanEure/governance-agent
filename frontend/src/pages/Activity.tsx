@@ -297,7 +297,7 @@ function ActivityAuthed({
     <>
       <SectionHeading>Pending approvals</SectionHeading>
       <p className="muted tiny activity-queue-note">
-        Review-gated active and featured proposals appear here until you sign or submit a choice.
+        Review-gated active proposals appear here until you sign or submit a choice.
       </p>
       {error && <div className="modal-error" style={{ marginBottom: 12 }}>{error}</div>}
       {visiblePending === null ? (

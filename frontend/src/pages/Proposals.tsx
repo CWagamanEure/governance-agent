@@ -413,8 +413,6 @@ function ProposalCard({
       </header>
       <div className="prop-meta">
         <code>{proposal.id.slice(0, 14)}…</code>
-        <span>·</span>
-        <code>{proposal.space?.id}</code>
       </div>
 
       {displayAnalysis && (

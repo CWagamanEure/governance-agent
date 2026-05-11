@@ -284,7 +284,12 @@ function PlanRow({ item, dry }: { item: AutopilotPlanItem; dry: boolean }) {
         </span>
         <span className="muted tiny">{confidenceText}</span>
         {!item.eligible && item.reason && (
-          <span className="autopilot-row-reason muted tiny">{item.reason}</span>
+          <span
+            className="autopilot-row-reason muted tiny"
+            title={item.reason}
+          >
+            {item.reason.length > 60 ? `${item.reason.slice(0, 57)}…` : item.reason}
+          </span>
         )}
       </div>
       {!dry && item.submitted && (
