@@ -956,8 +956,35 @@ input[type="range"] {
 }
 
 /* Profile card */
-.profile-card { padding: 22px 22px 18px; }
-.profile-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; gap: 12px; }
+.profile-card { padding: 18px 20px 14px; }
+
+/* Tighter spacing for the saved-policy view — the same .review-section
+   classes are also used by the Onboarding review step, which has more
+   real estate to fill. Scoping to .profile-card avoids touching that. */
+.profile-card .review-section {
+  margin-top: 12px;
+  padding-top: 10px;
+}
+.profile-card .review-values {
+  margin: 4px 0 0;
+}
+.profile-card .review-values li {
+  font-size: 13px;
+  line-height: 1.45;
+  margin-bottom: 2px;
+}
+.profile-card .review-section .dft-label {
+  margin-bottom: 4px;
+}
+.profile-card .profile-meta {
+  padding-top: 10px;
+  gap: 12px 16px;
+}
+.profile-card .profile-meta-val {
+  font-size: 13px;
+  margin-top: 2px;
+}
+.profile-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 12px; }
 .profile-head-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 /* Version pill — used in ProfileCard meta and PolicyEditor header so the
