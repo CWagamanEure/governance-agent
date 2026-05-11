@@ -49,6 +49,31 @@ type Flag = typeof FLAGS[number];
 
 type Profile = any; // schema-validated server-side
 
+const AUTOPILOT_DECISIONS = ['FOR', 'AGAINST', 'ABSTAIN'] as const;
+type AutopilotDecision = typeof AUTOPILOT_DECISIONS[number];
+
+type AutopilotConfig = {
+  enabled: boolean;
+  min_confidence: number;
+  decisions: AutopilotDecision[];
+};
+
+/**
+ * Client-side mirror of src/policy.ts isAutopilotEligible. Kept identical so
+ * the live diff badging matches what the backend would actually do at submit
+ * time. If the predicate ever changes, both copies must move together.
+ */
+function isAutopilotEligibleClient(
+  d: { decision: Decision; confidence: number },
+  autopilot: AutopilotConfig | undefined,
+): boolean {
+  if (!autopilot?.enabled) return false;
+  if (d.decision === 'MANUAL_REVIEW') return false;
+  if (!autopilot.decisions.includes(d.decision as AutopilotDecision)) return false;
+  if (d.confidence < autopilot.min_confidence) return false;
+  return true;
+}
+
 /**
  * Parse a USD-shaped input value. Accepts:
  *   ""              → null  (means "no cap" / "no threshold")
@@ -209,7 +234,8 @@ export function PolicyEditor({
         c.proposal.space === 'calibration.gov-agent' ? 'calibration' : 'real',
       ] as const),
     );
-    const out: { id: string; title: string | null; from: Decision; to: Decision; corpus: 'calibration' | 'real'; ruleIds: string[] }[] = [];
+    const out: { id: string; title: string | null; from: Decision; to: Decision; corpus: 'calibration' | 'real'; ruleIds: string[]; autopilotEligible: boolean; confidence: number }[] = [];
+    const autopilot = draft.autopilot as AutopilotConfig | undefined;
     for (const d of draftDecisions) {
       const b = baseMap.get(d.proposal_id);
       if (!b) continue;
@@ -221,6 +247,8 @@ export function PolicyEditor({
           to: d.decision,
           corpus: corpusMap.get(d.proposal_id) ?? 'real',
           ruleIds: d.triggered_rule_ids ?? [],
+          autopilotEligible: isAutopilotEligibleClient(d, autopilot),
+          confidence: d.confidence,
         });
       }
     }
@@ -233,7 +261,21 @@ export function PolicyEditor({
       return decisionWeight(a.to) - decisionWeight(b.to);
     });
     return out;
-  }, [baselineDecisions, draftDecisions, cached]);
+  }, [baselineDecisions, draftDecisions, cached, draft.autopilot]);
+
+  // Live autopilot summary: how many of ALL cached proposals (not just diff
+  // flips) would auto-vote under the current draft.autopilot settings.
+  // Recomputed on every slider tick or decision toggle, no backend round-
+  // trip — the decisions come from the existing draftDecisions response.
+  const autopilotSummary = useMemo(() => {
+    if (!draftDecisions) return { eligible: 0, total: 0 };
+    const autopilot = draft.autopilot as AutopilotConfig | undefined;
+    let eligible = 0;
+    for (const d of draftDecisions) {
+      if (isAutopilotEligibleClient(d, autopilot)) eligible++;
+    }
+    return { eligible, total: draftDecisions.length };
+  }, [draftDecisions, draft.autopilot]);
 
   const isDirty = useMemo(() => !deepEqual(draft, baseProfile.profile_json), [draft, baseProfile.profile_json]);
 
@@ -352,6 +394,11 @@ export function PolicyEditor({
           <ManualReviewCategoriesField draft={draft} setDraft={setDraft} />
           <ManualReviewFlagsField draft={draft} setDraft={setDraft} />
           <HardRulesField draft={draft} setDraft={setDraft} />
+          <AutopilotField
+            draft={draft}
+            setDraft={setDraft}
+            summary={autopilotSummary}
+          />
           <ReadOnlySummary draft={draft} />
         </div>
 
@@ -628,6 +675,95 @@ function HardRulesField({ draft, setDraft }: { draft: Profile; setDraft: (p: Pro
   );
 }
 
+function AutopilotField({
+  draft,
+  setDraft,
+  summary,
+}: {
+  draft: Profile;
+  setDraft: (p: Profile) => void;
+  summary: { eligible: number; total: number };
+}) {
+  const ap: AutopilotConfig = draft.autopilot ?? {
+    enabled: false,
+    min_confidence: 0.85,
+    decisions: ['FOR'],
+  };
+  function update(patch: Partial<AutopilotConfig>) {
+    setDraft({ ...draft, autopilot: { ...ap, ...patch } });
+  }
+  function toggleDecision(d: AutopilotDecision) {
+    const set = new Set<AutopilotDecision>(ap.decisions);
+    if (set.has(d)) set.delete(d);
+    else set.add(d);
+    // Keep canonical order so the saved JSON is stable across edits.
+    const next = AUTOPILOT_DECISIONS.filter((x) => set.has(x));
+    update({ decisions: next });
+  }
+  return (
+    <section className="editor-section autopilot-field">
+      <div className="editor-section-head">
+        <h4>Autopilot</h4>
+        <label className="editor-inline">
+          <input
+            type="checkbox"
+            checked={!!ap.enabled}
+            onChange={(e) => update({ enabled: e.target.checked })}
+          />
+          enabled
+        </label>
+      </div>
+      <p className="muted tiny">
+        Cryptographically authorize the system to vote on your behalf without per-vote review,
+        gated by a confidence floor. Hashed into the policy on save.
+      </p>
+
+      <label className="autopilot-slider-row" style={{ marginTop: 10 }}>
+        <span className="autopilot-slider-label">
+          Confidence floor:{' '}
+          <code className="autopilot-floor">{ap.min_confidence.toFixed(2)}</code>
+        </span>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.01}
+          value={ap.min_confidence}
+          onChange={(e) => update({ min_confidence: Number(e.target.value) })}
+          className="autopilot-slider"
+          disabled={!ap.enabled}
+        />
+      </label>
+
+      <div className="autopilot-decisions" style={{ marginTop: 8 }}>
+        <span className="muted tiny">Eligible decisions:</span>
+        {AUTOPILOT_DECISIONS.map((d) => (
+          <label key={d} className="editor-inline" style={{ marginLeft: 8 }}>
+            <input
+              type="checkbox"
+              checked={ap.decisions.includes(d)}
+              onChange={() => toggleDecision(d)}
+              disabled={!ap.enabled}
+            />
+            <span>{d}</span>
+          </label>
+        ))}
+      </div>
+
+      <div
+        className={`autopilot-summary ${ap.enabled ? 'on' : 'off'}`}
+        style={{ marginTop: 12 }}
+        role="status"
+      >
+        Autopilot would currently vote on{' '}
+        <strong>{ap.enabled ? summary.eligible : 0}</strong> of {summary.total} cached
+        proposals at this configuration
+        {!ap.enabled && <span className="muted tiny"> (toggle on to evaluate)</span>}.
+      </div>
+    </section>
+  );
+}
+
 function ReadOnlySummary({ draft }: { draft: Profile }) {
   return (
     <section className="editor-section editor-readonly">
@@ -665,7 +801,7 @@ function DiffPanel({
   previewing: boolean;
   baselineDecisions: PolicyPreviewDecision[] | null;
   draftDecisions: PolicyPreviewDecision[] | null;
-  diffs: { id: string; title: string | null; from: Decision; to: Decision; corpus: 'calibration' | 'real'; ruleIds: string[] }[];
+  diffs: { id: string; title: string | null; from: Decision; to: Decision; corpus: 'calibration' | 'real'; ruleIds: string[]; autopilotEligible: boolean; confidence: number }[];
   cached: CachedProposalRow[] | null;
 }) {
   const baseCounts = decisionCounts(baselineDecisions);
@@ -728,6 +864,14 @@ function DiffPanel({
                   <span className={`corpus-badge corpus-${d.corpus}`}>
                     {d.corpus === 'calibration' ? 'CAL' : 'REAL'}
                   </span>
+                  {d.autopilotEligible && (
+                    <span
+                      className="autopilot-badge"
+                      title={`Autopilot would auto-vote on this proposal at confidence ${d.confidence.toFixed(2)}`}
+                    >
+                      AUTO
+                    </span>
+                  )}
                   {d.title ?? d.id.slice(0, 14) + '…'}
                 </div>
                 <div className="diff-item-decision">
