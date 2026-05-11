@@ -1417,11 +1417,11 @@ app.post(
  * and (when dry_run is false) signs + submits the eligible items
  * sequentially with a small inter-vote delay.
  *
- * Why cached-only extractions: live LLM calls in a batch would multiply the
- * latency and the failure surface. The demo path always has cached
- * extractions for the current corpus; live-active proposals from a fallback
- * DAO that have not been pre-extracted are surfaced as not-eligible with
- * the reason "no_cached_extraction" so the operator can see them.
+ * Extraction: each item goes through runPipeline, which uses the DB cache
+ * if a row exists at the current EXTRACTION_SCHEMA_VERSION and otherwise
+ * calls the LLM live inside the TEE and writes through to the cache.
+ * The plan phase runs items in parallel via Promise.allSettled so a single
+ * slow or failing extraction does not block the rest of the batch.
  *
  * Body:
  *   {
@@ -1526,34 +1526,39 @@ app.post(
       confidence: number | null;
       eligible: boolean;
       reason?: string;
+      // 'cache' | 'live' | 'none' — surfaces whether autopilot used a
+      // pre-existing extraction or had to run the LLM live for this item.
+      // Useful for cost reporting and for proving in the audit log that
+      // the system extracted a brand-new proposal on its own initiative.
+      extraction_source?: string;
       submitted?: { ok: boolean; snapshot_url?: string; error?: string };
     };
 
-    // Per-item: any throw inside this map (corrupt JSON, missing field) is
-    // caught and surfaced as a single not-eligible row instead of crashing
-    // the whole batch. The other 9 of 10 items still get processed.
-    const plan: PlanItem[] = proposals.map((p) => {
-      const space = p.space?.id ?? null;
-      const cached = getCachedAnalysis(p.id, EXTRACTION_SCHEMA_VERSION);
-      if (!cached) {
-        return {
-          proposal_id: p.id,
-          title: p.title ?? null,
-          space,
-          decision: null,
-          confidence: null,
-          eligible: false,
-          reason: 'no_cached_extraction',
-        };
-      }
-      try {
-        const analysis = JSON.parse(cached.analysis_json) as AnalysisForPolicy;
-        analysis.extraction_confidence = cached.extraction_confidence;
-        const evaluation = evaluatePolicy(analysis, policy, rules, {
-          id: p.id,
-          author_address: p.author,
-          space: space ?? undefined,
-        });
+    // Plan phase: run extraction + evaluation per item in parallel via
+    // Promise.allSettled. runPipeline transparently uses the DB cache when
+    // available and falls back to a live LLM call inside the TEE (with
+    // write-through to the cache) when not. Per-item failures are isolated:
+    // an extraction throw produces a single not-eligible row instead of
+    // crashing the batch.
+    const settled = await Promise.allSettled(
+      proposals.map(async (p) => {
+        const space = p.space?.id ?? null;
+        const result = await runPipeline({ proposal: p, profile: policy });
+        if (!result.evaluation || !result.analysis) {
+          return {
+            proposal_id: p.id,
+            title: p.title ?? null,
+            space,
+            decision: null,
+            confidence: null,
+            eligible: false,
+            reason: result.extraction_error
+              ? `extraction_failed: ${result.extraction_error}`
+              : 'no_extraction',
+            extraction_source: result.extraction.source,
+          } satisfies PlanItem;
+        }
+        const evaluation = result.evaluation;
         const eligible = isAutopilotEligible(evaluation, effectiveAutopilot);
         let reason: string | undefined;
         if (!eligible) {
@@ -1569,18 +1574,22 @@ app.post(
           confidence: evaluation.confidence,
           eligible,
           reason,
-        };
-      } catch (e) {
-        return {
-          proposal_id: p.id,
-          title: p.title ?? null,
-          space,
-          decision: null,
-          confidence: null,
-          eligible: false,
-          reason: `cached_extraction_corrupt: ${e instanceof Error ? e.message : String(e)}`,
-        };
-      }
+          extraction_source: result.extraction.source,
+        } satisfies PlanItem;
+      }),
+    );
+    const plan: PlanItem[] = settled.map((s, i) => {
+      if (s.status === 'fulfilled') return s.value;
+      const p = proposals[i];
+      return {
+        proposal_id: p.id,
+        title: p.title ?? null,
+        space: p.space?.id ?? null,
+        decision: null,
+        confidence: null,
+        eligible: false,
+        reason: `pipeline_error: ${s.reason instanceof Error ? s.reason.message : String(s.reason)}`,
+      };
     });
 
     if (dryRun) {

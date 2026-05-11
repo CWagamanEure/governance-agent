@@ -495,6 +495,10 @@ export type AutopilotPlanItem = {
   confidence: number | null;
   eligible: boolean;
   reason?: string;
+  // Whether autopilot used a pre-existing cache or scored this proposal
+  // live in the TEE. 'live' means the system extracted a brand-new
+  // proposal on its own initiative.
+  extraction_source?: 'cache' | 'live' | 'supplied' | 'none';
   submitted?: { ok: boolean; snapshot_url?: string; error?: string };
 };
 
