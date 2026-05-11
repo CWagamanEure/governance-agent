@@ -1468,6 +1468,24 @@ app.post(
     const maxVotes = Number.isFinite(rawMax)
       ? Math.min(Math.max(Math.trunc(rawMax), 1), 25)
       : 10;
+    // Per-item LLM call timeout. Cache hits should return in <10ms; live
+    // extractions in 3-8s; 20s is a generous ceiling that catches truly
+    // stuck calls without false positives. Body-overridable, clamped
+    // [3s, 60s] so a misconfigured client cannot pin the batch open.
+    const rawTimeout = Number(body?.extraction_timeout_ms);
+    const extractionTimeoutMs = Number.isFinite(rawTimeout)
+      ? Math.min(Math.max(Math.trunc(rawTimeout), 3_000), 60_000)
+      : 20_000;
+    // Soft cap on how many cache-miss items we will extract live in a
+    // single batch. Bounds worst-case LLM cost when a DAO suddenly has
+    // many active proposals. Items past the cap are surfaced as
+    // not-eligible with reason live_extraction_budget_exceeded; a
+    // follow-up batch picks them up (and the previously-extracted ones
+    // are now cached and free). Body-overridable, clamped [0, 25].
+    const rawBudget = Number(body?.live_extraction_budget);
+    const liveExtractionBudget = Number.isFinite(rawBudget)
+      ? Math.min(Math.max(Math.trunc(rawBudget), 0), 25)
+      : 10;
     const proposals = Array.isArray(body.proposals) ? (body.proposals as SnapshotProposalRaw[]) : [];
 
     const user = findOrCreateUser(address);
@@ -1534,16 +1552,68 @@ app.post(
       submitted?: { ok: boolean; snapshot_url?: string; error?: string };
     };
 
-    // Plan phase: run extraction + evaluation per item in parallel via
-    // Promise.allSettled. runPipeline transparently uses the DB cache when
-    // available and falls back to a live LLM call inside the TEE (with
-    // write-through to the cache) when not. Per-item failures are isolated:
-    // an extraction throw produces a single not-eligible row instead of
-    // crashing the batch.
+    // Plan phase setup: split proposals into cache-hits (free) and
+    // cache-misses (each triggers one live LLM call). We pay the live cost
+    // only up to liveExtractionBudget items per batch; the rest pass
+    // through as not-eligible with a clear reason so the operator sees
+    // them and a follow-up batch can drain them. allowLive=false on a
+    // pre-classified miss makes runPipeline skip the LLM call.
+    const allowLive: boolean[] = new Array(proposals.length).fill(true);
+    let liveSlotsRemaining = liveExtractionBudget;
+    for (let i = 0; i < proposals.length; i++) {
+      const hasCache = getCachedAnalysis(proposals[i].id, EXTRACTION_SCHEMA_VERSION) !== null;
+      if (hasCache) continue;
+      if (liveSlotsRemaining > 0) {
+        liveSlotsRemaining -= 1;
+      } else {
+        allowLive[i] = false;
+      }
+    }
+
+    // Plan phase fan-out: each item runs through runPipeline behind a
+    // per-item timeout race. runPipeline uses the cache when available
+    // and otherwise calls the LLM live inside the TEE. allowLive=false
+    // skips the LLM call entirely (budget exhausted). Per-item failures
+    // and timeouts are isolated — they produce a single not-eligible row
+    // instead of crashing the batch.
     const settled = await Promise.allSettled(
-      proposals.map(async (p) => {
+      proposals.map(async (p, i) => {
         const space = p.space?.id ?? null;
-        const result = await runPipeline({ proposal: p, profile: policy });
+        // Budget-exceeded items: do not call the LLM. Cache hit still
+        // works because runPipeline falls through to live only after
+        // checking the cache; we short-circuit before that to surface a
+        // clearer reason.
+        if (!allowLive[i]) {
+          return {
+            proposal_id: p.id,
+            title: p.title ?? null,
+            space,
+            decision: null,
+            confidence: null,
+            eligible: false,
+            reason: 'live_extraction_budget_exceeded',
+            extraction_source: 'none',
+          } satisfies PlanItem;
+        }
+        // Per-item timeout. Math.race against a rejection so a hung LLM
+        // call cannot stall the whole batch. The rejection bubbles to
+        // Promise.allSettled and we surface a typed reason below.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`extraction_timeout_${extractionTimeoutMs}ms`)),
+            extractionTimeoutMs,
+          );
+        });
+        let result;
+        try {
+          result = await Promise.race([
+            runPipeline({ proposal: p, profile: policy }),
+            timeout,
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
         if (!result.evaluation || !result.analysis) {
           return {
             proposal_id: p.id,
@@ -1581,6 +1651,8 @@ app.post(
     const plan: PlanItem[] = settled.map((s, i) => {
       if (s.status === 'fulfilled') return s.value;
       const p = proposals[i];
+      const errMsg = s.reason instanceof Error ? s.reason.message : String(s.reason);
+      const isTimeout = errMsg.startsWith('extraction_timeout_');
       return {
         proposal_id: p.id,
         title: p.title ?? null,
@@ -1588,7 +1660,7 @@ app.post(
         decision: null,
         confidence: null,
         eligible: false,
-        reason: `pipeline_error: ${s.reason instanceof Error ? s.reason.message : String(s.reason)}`,
+        reason: isTimeout ? `extraction_timeout: ${errMsg}` : `pipeline_error: ${errMsg}`,
       };
     });
 
