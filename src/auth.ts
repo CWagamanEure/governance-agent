@@ -75,6 +75,54 @@ function sessionSecret(): Uint8Array {
 
 export type VerifiedSiwe = { address: `0x${string}` };
 
+/**
+ * Optional operator allowlist. When OPERATOR_ADDRESS_ALLOWLIST is set
+ * (comma-separated 0x-prefixed addresses), only those wallets may
+ * SIWE-verify successfully. Every other auth-gated endpoint reads from
+ * the resulting JWT, so this is a single chokepoint for "who can talk
+ * to the cost-bearing TEE." Local dev with no env value keeps the
+ * legacy open-registration behavior.
+ *
+ * Lazily memoized so a change in env between hot-reloads picks up on
+ * the next call (still requires a process restart in prod).
+ */
+// undefined = not yet memoized; null = memoized as "no allowlist configured".
+// Don't conflate the two — caching an empty Set would block every wallet.
+let _operatorAllowlist: Set<string> | null | undefined = undefined;
+function operatorAllowlist(): Set<string> | null {
+  if (_operatorAllowlist !== undefined) return _operatorAllowlist;
+  const raw = process.env.OPERATOR_ADDRESS_ALLOWLIST;
+  if (!raw || !raw.trim()) {
+    _operatorAllowlist = null;
+    return null;
+  }
+  const set = new Set(
+    raw
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter((s) => /^0x[0-9a-f]{40}$/.test(s)),
+  );
+  // An env value that parses to zero valid addresses (typo, all garbage)
+  // should NOT silently brick auth — treat as "no allowlist."
+  if (set.size === 0) {
+    _operatorAllowlist = null;
+    return null;
+  }
+  _operatorAllowlist = set;
+  return set;
+}
+
+export class OperatorNotAllowlistedError extends Error {
+  status = 403 as const;
+  constructor(public readonly address: string) {
+    super(
+      `Wallet ${address} is not on the operator allowlist. ` +
+        `Ask the deploy operator to add it to OPERATOR_ADDRESS_ALLOWLIST, ` +
+        `or run a local instance without that env set.`,
+    );
+  }
+}
+
 export async function verifySiwe(args: {
   message: string;
   signature: `0x${string}`;
@@ -93,6 +141,18 @@ export async function verifySiwe(args: {
     signature: args.signature,
   });
   if (!ok) throw new Error('signature does not recover to claimed address');
+
+  // Operator allowlist gate. The nonce is already consumed at this point,
+  // which is fine: a non-allowlisted attacker still burns one nonce per
+  // try, which is bounded by NONCE_TTL_MS and rate-limited by SIWE's
+  // built-in user signing requirement.
+  const allowlist = operatorAllowlist();
+  if (allowlist) {
+    const addrLower = (fields.address as string).toLowerCase();
+    if (!allowlist.has(addrLower)) {
+      throw new OperatorNotAllowlistedError(addrLower);
+    }
+  }
 
   return { address: fields.address as `0x${string}` };
 }

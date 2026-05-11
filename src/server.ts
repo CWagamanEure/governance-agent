@@ -65,6 +65,7 @@ import {
   getAuthedAddress,
   requireAuth,
   AuthRequiredError,
+  OperatorNotAllowlistedError,
 } from './auth.js';
 import { userWallet } from './wallets.js';
 import { compileProfile } from './profile-compiler.js';
@@ -648,6 +649,16 @@ app.post('/auth/siwe/verify', async (c) => {
       expires_in: 7 * 24 * 60 * 60,
     });
   } catch (e: any) {
+    // OperatorNotAllowlistedError is a 403 with a clear message —
+    // distinguish it from generic 401 so the frontend can render a
+    // useful "this wallet is not authorized" UI instead of a generic
+    // signature-rejected toast.
+    if (e instanceof OperatorNotAllowlistedError) {
+      return c.json(
+        { error: 'operator_not_allowlisted', message: e.message },
+        403,
+      );
+    }
     return c.json({ error: e?.message ?? String(e) }, 401);
   }
 });
