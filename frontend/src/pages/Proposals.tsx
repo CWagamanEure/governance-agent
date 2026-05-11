@@ -521,8 +521,9 @@ function ProposalCard({
           className="btn"
           onClick={runLiveInTee}
           disabled={liveLoading || !proposal}
+          title="Re-runs the LLM extraction inside the attested TEE and replaces the cached score for this proposal. Autopilot only operates on cached scores, so this is also how new proposals become eligible for autopilot."
         >
-          {liveLoading ? 'Running live in TEE…' : 'Run live in TEE'}
+          {liveLoading ? 'Re-scoring in TEE…' : 'Re-score in TEE'}
         </button>
         {decision === 'FOR' || decision === 'AGAINST' || decision === 'ABSTAIN' ? (
           <button

@@ -713,7 +713,6 @@ input[type="range"] {
   text-decoration: none;
   letter-spacing: -0.01em;
 }
-.brand-link:hover { color: var(--accent); text-decoration: none; }
 .dao-chip {
   font-family: var(--mono);
   font-size: 11px;

@@ -310,9 +310,7 @@ function TopBar({
     <header className="topbar">
       <div className="topbar-inner">
         <div className="brand">
-          <a href="#/" className="brand-link">
-            Governance Agent
-          </a>
+          <span className="brand-link">Governance Agent</span>
         </div>
 
         <nav className="dash-tabs">
