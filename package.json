@@ -20,6 +20,7 @@
     "test:sign-verify": "tsx scripts/test-sign-verify.ts",
     "test:autopilot": "tsx scripts/test-autopilot.ts",
     "test:rate-limit": "tsx scripts/test-rate-limit.ts",
+    "test:autopilot-cron": "tsx scripts/test-autopilot-cron.ts",
     "pipeline": "tsx scripts/run-pipeline.ts"
   },
   "dependencies": {
