@@ -61,6 +61,15 @@ export const DEMO_PROFILE: PolicyProfileT = {
     vote_for_emission_cuts: false,
     require_milestones_for_treasury: true,
   },
+  // Autopilot OFF in the seeded profile — the demo turns it on live in
+  // ACT 4.5 to show the slider + diff-badging beat. Conservative defaults
+  // (FOR-only, 0.85 confidence floor) so a reviewer who clicks Save without
+  // tweaking the slider does not accidentally enable broad auto-voting.
+  autopilot: {
+    enabled: false,
+    min_confidence: 0.85,
+    decisions: ['FOR'],
+  },
   stated_values: [
     'I support small accountable grants for ecosystem work — under $500k, with milestones and reporting.',
     'META_GOVERNANCE proposals should default to ABSTAIN: I do not have a strong opinion on most procedure changes, but I do not want to autovote either way.',

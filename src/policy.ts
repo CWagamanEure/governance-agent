@@ -66,6 +66,31 @@ export const HardRules = z.object({
 });
 export type HardRulesT = z.infer<typeof HardRules>;
 
+const AutopilotDecision = z.enum(['FOR', 'AGAINST', 'ABSTAIN']);
+
+/**
+ * Autopilot block: the user's authorization for the system to vote on their
+ * behalf without per-vote review, gated by a confidence floor and a list of
+ * eligible decision types.
+ *
+ * This block is hashed into the policy hash and audit-logged on save, so the
+ * user is cryptographically authorizing autopilot at exactly these settings.
+ * Any vote cast under autopilot references the same policy hash, making the
+ * authority chain auditable forever.
+ *
+ * Defaults are conservative:
+ *   - enabled: false (no surprise autonomy on first save)
+ *   - min_confidence: 0.85 (only high-confidence decisions auto-vote)
+ *   - decisions: ['FOR'] only (auto-AGAINST and auto-ABSTAIN require an
+ *     explicit opt-in; the user has to think before broadening scope)
+ */
+export const Autopilot = z.object({
+  enabled: z.boolean().default(false),
+  min_confidence: z.number().min(0).max(1).default(0.85),
+  decisions: z.array(AutopilotDecision).default(['FOR']),
+});
+export type AutopilotT = z.infer<typeof Autopilot>;
+
 export const PolicyProfile = z.object({
   schema_version: z.literal('policy-v2').default('policy-v2'),
   default_action: DecisionSchema.default('ABSTAIN'),
@@ -81,6 +106,15 @@ export const PolicyProfile = z.object({
     vote_against_emission_increases: true,
     vote_for_emission_cuts: false,
     require_milestones_for_treasury: true,
+  }),
+  // Default to a conservative-off autopilot so existing saved profiles
+  // (which were saved before this field existed) parse cleanly without a
+  // migration. Zod fills the default; the policy hash for those profiles
+  // changes only on the next explicit save.
+  autopilot: Autopilot.default({
+    enabled: false,
+    min_confidence: 0.85,
+    decisions: ['FOR'],
   }),
   stated_values: z.array(z.string()).default([]),
 });
@@ -949,6 +983,11 @@ export const DEFAULT_PROFILE: PolicyProfileT = {
     vote_against_emission_increases: true,
     vote_for_emission_cuts: false,
     require_milestones_for_treasury: true,
+  },
+  autopilot: {
+    enabled: false,
+    min_confidence: 0.85,
+    decisions: ['FOR'],
   },
   stated_values: [],
 };

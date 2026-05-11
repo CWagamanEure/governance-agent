@@ -246,6 +246,13 @@ function fallbackCompile(input: CompileInput): PolicyProfileT {
       vote_for_emission_cuts: wantsSustain || hasDecent || dislikesCent,
       require_milestones_for_treasury: true,
     },
+    autopilot: {
+      // Fallback compiler always emits autopilot OFF; the user has to opt in
+      // explicitly from the editor after seeing the diff at their threshold.
+      enabled: false,
+      min_confidence: 0.85,
+      decisions: ['FOR'],
+    },
     stated_values: stated,
   };
 }
