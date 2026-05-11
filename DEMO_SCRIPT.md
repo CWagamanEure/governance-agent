@@ -106,10 +106,11 @@ ACT 5c (live Snapshot submit) requires (a) an active Snapshot proposal
 in one of the configured spaces AND (b) the policy evaluates it as
 FOR/AGAINST/ABSTAIN, not MANUAL_REVIEW.
 
-The SignAndVerifyCard scans the primary DAO + every fallback space in
-parallel and surfaces all of them grouped in the dropdown. So the
-question is "any active proposal in any of these four DAOs?" — much
-more likely to be yes than waiting on a single DAO.
+The SignAndVerifyCard on the Trust tab scans the primary DAO + every
+fallback space in parallel and surfaces all of them grouped in the
+proposal dropdown. So the question is "any active proposal in any of
+these four DAOs?" — much more likely to be yes than waiting on a
+single DAO.
 
 Check 30 minutes before:
 
@@ -385,8 +386,10 @@ sign + verify + submit.)
 
 ## ACT 5 — Trust path: sign → verify → submit (90s)
 
-Click Cancel back to the Policy page. Two new cards are now visible below
-the ProfileCard: **Live sign · verify · submit** and **Attestation**.
+Click **Cancel** back to the Policy page. Now switch to the **Trust**
+tab in the topbar — this is where the sign / verify / submit loop
+lives. Policy stays focused on "what your policy is"; Trust is where
+the cryptographic-proof story plays out.
 
 ### 5a. Sign
 
@@ -458,45 +461,34 @@ Kleros) instead of Arbitrum, briefly acknowledge:
 > The demo only works on the four DAOs the operator pre-allowlisted;
 > there is no path for arbitrary write access."
 
-### 5c.bis Autopilot batch (optional, only if 4.5 enabled autopilot)
+### 5c.bis Autonomy beat (the cron)
 
-Below the SignAndVerify card is the **Autopilot batch run** card. If
-ACT 4.5 enabled autopilot in the saved policy, this is the operational
-counterpart to the slider.
+There is no separate "Run autopilot batch" button anymore — the
+autopilot cron in the deployed TEE does the operational work
+automatically. Acknowledge it briefly:
 
-Click **Preview autopilot batch**. The card scans live-active proposals
-across all four allowlisted spaces, plus the cached corpus, and shows
-the per-item plan with eligibility verdict and reason. Items the
-autopilot would auto-vote on are flagged with the green AUTO badge.
+> "The same machinery I just walked you through manually — extract,
+> evaluate, eligibility-check, sign, submit — runs unattended every
+> 15 minutes inside the TEE for any user with autopilot enabled.
+> Each tick writes a hash-chained audit row. Nothing magical happens
+> when nobody is at the keyboard; the same content-addressed trail I
+> just showed you accumulates."
 
-> "Same eligibility logic as the editor preview — but applied to live
-> proposals across all my allowlisted DAOs at once. The system did
-> the per-vote decision work without per-vote review. Closed cached
-> proposals show the verdict but Snapshot would reject them at submit
-> time — that is expected and surfaced explicitly."
+To prove the cron is real on stage, curl the audit log:
+```bash
+curl -sS http://34.90.5.10:8000/audit -H "Authorization: Bearer $TOKEN" \
+  | jq '.[] | select(.event_type == "autopilot_poll_tick") | {ts, payload}' \
+  | head -40
+```
 
-Two safe paths from here:
-
-(a) **If any active proposal is eligible:** click **Run live**. Confirm
-the dialog (spells out the saved-policy autopilot config and the
-eligible count). Per-item submission results render with Snapshot
-URLs. End the autonomy beat with: *"the agent just decided on 8
-proposals and submitted on 3, all without per-vote review, all
-auditable back to my saved policy hash."*
-
-(b) **If no active proposal is eligible (cached items only):** stay in
-dry-run. *"At demo time, none of the active proposals across these four
-DAOs cleared my 0.85 confidence floor. The system declines to autovote.
-The plan shows exactly which proposals it skipped and why. Same
-machinery would submit if any cleared the bar — same path I just walked
-through manually in 5a."*
-
-Either way, do NOT live-submit unless the operator has dry-run-tested the
-exact path within the last hour.
+Each row shows tick number, user count scanned, items scored, items
+submitted. The hash-chained `prev_hash` / `row_hash` columns prove
+the chain is intact.
 
 ### 5d. Attestation
 
-Scroll to the **Attestation** card.
+Switch back to the **Policy** tab. The Attestation card lives below
+the policy summary.
 
 > "And here's the chain that makes the wallet itself trustworthy."
 
@@ -528,15 +520,18 @@ deployed app id pre-filled.
 ## Q&A prep
 
 **"How does the autonomous voting actually work? Is there a cron loop?"**
-Today, autopilot is triggered by clicking the Run-Autopilot button. The
-trigger is manual; the per-vote *decision* is autonomous (the system
-processed N proposals and applied the eligibility predicate without me
-reviewing each one). The cron version is the same code path behind a
-per-user opt-in we deliberately held — cross-user automated submission
-needs an on-call rotation we want to design carefully. The hard parts
-(per-user signing wallet, deterministic policy, signed audit trail,
-allowlist gate, batch processing with rate limit) all work today. Adding
-the timer is a runtime config change, not a code change.
+Yes. The deployed TEE runs a polling cron — every 15 minutes by default
+(`AUTOPILOT_POLL_INTERVAL_MS`, set `AUTOPILOT_POLL_ENABLED=true` on the
+deploy env to turn it on). Each tick: list every user with
+`autopilot.enabled = true` in their saved policy, intersect their
+followed_spaces with the deploy allowlist, fetch active proposals in
+those spaces, extract (cache-first, live LLM in the TEE on miss),
+evaluate the deterministic engine, sign + submit eligible items
+through the per-user wallet, and write a hash-chained
+`autopilot_poll_tick` audit row. Already-submitted proposals dedupe
+against the audit chain so repeated ticks do not re-vote. Persistent
+failures (MNEMONIC missing, etc.) trip a per-user
+`permanentlySkipped` counter so the audit log does not spam.
 
 **"What stops me from accidentally enabling broad autonomous voting?"**
 Three layers, all visible in the editor before save.
@@ -612,7 +607,10 @@ rule id on each diff item.
 - [ ] Click **Reset** in the topbar once; confirm the Policy page lands
       on onboarding (no saved profile). Walk through **Use example
       values** → Continue → **Use example calibration** → Save. After
-      save, ProfileCard shows version 1 with autopilot
+      save, the Policy page shows the ProfileCard with a status pill
+      reading `AUTOPILOT disabled · floor 0.85 · 4 DAOs followed`
+      and a two-column "How it votes" / "When it stops" body. Stated
+      values collapse under a click-to-expand toggle. Autopilot
       "disabled · Confidence floor 0.85".
 - [ ] Editor first paint shows "48 past proposals" and zero flipped; the
       diff list is grouped into "Calibration set" / "Real proposals".
@@ -621,8 +619,8 @@ rule id on each diff item.
       and verify takes <100 ms.
 - [ ] Open the Autopilot section in the editor and verify the slider
       drag updates the "X of N" counter live.
-- [ ] Click "Preview autopilot batch" to confirm the AutopilotRunCard
-      reaches the backend and renders a plan.
+- [ ] curl /audit | jq for autopilot_poll_tick rows to confirm the cron
+      is running on the deploy (set AUTOPILOT_POLL_ENABLED=true).
 - [ ] Check Snapshot for active proposals across all four allowlisted
       spaces (arbitrumfoundation, gitcoindao, gnosis, kleros) 30 min
       before the demo so you know which branch ACT 5c will take.
