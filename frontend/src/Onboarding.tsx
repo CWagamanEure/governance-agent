@@ -1,12 +1,18 @@
 /**
  * Multi-step onboarding flow.
  *
- *   1. Values     — user writes 3-5 sentences in plain language
+ *   1. Values      — user writes 3-5 sentences in plain language
  *   2. Calibration — vote on real past proposals; mark personal-not-policy
- *   3. Review     — compiled defaults, flags, delegation, and hard limits
+ *   3. Follow      — pick which DAOs autopilot should watch (R3)
+ *   4. Review      — compiled defaults, flags, delegation, hard limits, follows
  *
  * The deterministic policy engine still owns voting decisions. The LLM only
  * shapes the policy at setup time; user reviews and approves before save.
+ *
+ * The Follow step lands BEFORE compile so the saved profile includes the
+ * user's pick from the first save. Without this step, fresh users land in
+ * the empty-follows trap (banner fires, autopilot does nothing) until they
+ * detour through the policy editor.
  */
 
 import { useState } from 'react';
@@ -14,7 +20,7 @@ import { compileProfile, saveProfile } from './api';
 import { getStoredToken } from './lib/auth';
 import { CALIBRATION, type CalibrationProposal } from './data/calibration';
 
-type Step = 'values' | 'calibration' | 'review';
+type Step = 'values' | 'calibration' | 'follow' | 'review';
 
 type Choice = 'FOR' | 'AGAINST' | 'ABSTAIN';
 
@@ -75,7 +81,13 @@ const DEMO_CALIBRATION: Record<string, { choice: Choice; reason: string }> = {
   },
 };
 
-export function Onboarding({ onSaved }: { onSaved: (version: number) => void }) {
+export function Onboarding({
+  onSaved,
+  allowlistedSpaces,
+}: {
+  onSaved: (version: number) => void;
+  allowlistedSpaces: string[];
+}) {
   const [step, setStep] = useState<Step>('values');
   const [statedValues, setStatedValues] = useState('');
   const [calibration, setCalibration] = useState<CalEntry[]>(
@@ -85,6 +97,11 @@ export function Onboarding({ onSaved }: { onSaved: (version: number) => void }) 
       reason: '',
       personal_not_policy: false,
     })),
+  );
+  // Default to following every allowlisted DAO. The user can untick any
+  // before continuing; the explicit choice ships into the saved profile.
+  const [followedSpaces, setFollowedSpaces] = useState<Set<string>>(
+    () => new Set(allowlistedSpaces),
   );
   const [compiled, setCompiled] = useState<any | null>(null);
   const [compileSource, setCompileSource] = useState<'llm' | 'fallback'>('fallback');
@@ -113,6 +130,25 @@ export function Onboarding({ onSaved }: { onSaved: (version: number) => void }) 
           entries={calibration}
           onUpdate={setCalibration}
           onBack={() => setStep('values')}
+          onContinue={() => {
+            setError(null);
+            setStep('follow');
+          }}
+          submitting={busy}
+        />
+      )}
+
+      {step === 'follow' && (
+        <FollowStep
+          allowlistedSpaces={allowlistedSpaces}
+          followed={followedSpaces}
+          onToggle={(space) => {
+            const next = new Set(followedSpaces);
+            if (next.has(space)) next.delete(space);
+            else next.add(space);
+            setFollowedSpaces(next);
+          }}
+          onBack={() => setStep('calibration')}
           onContinue={async () => {
             setError(null);
             setBusy(true);
@@ -153,15 +189,24 @@ export function Onboarding({ onSaved }: { onSaved: (version: number) => void }) 
           profile={compiled}
           source={compileSource}
           warnings={compileWarnings}
+          followedSpaces={[...followedSpaces]}
           onBackToValues={() => setStep('values')}
           onBackToCalibration={() => setStep('calibration')}
+          onBackToFollow={() => setStep('follow')}
           onAccept={async () => {
             setError(null);
             setBusy(true);
             try {
               const token = getStoredToken();
               if (!token) throw new Error('not authenticated');
-              const r = await saveProfile({ token, profile: compiled });
+              // Augment the compiled profile with the user's follow
+              // selection before saving. The /profile endpoint will
+              // normalize + intersect with the live allowlist (F1+M4).
+              const profileToSave = {
+                ...compiled,
+                followed_spaces: [...followedSpaces],
+              };
+              const r = await saveProfile({ token, profile: profileToSave });
               onSaved(r.profile.version);
             } catch (e: any) {
               setError(e?.message ?? String(e));
@@ -183,6 +228,7 @@ export function Onboarding({ onSaved }: { onSaved: (version: number) => void }) 
 const STEP_LABELS: { id: Step; label: string }[] = [
   { id: 'values',      label: 'Values' },
   { id: 'calibration', label: 'Calibration' },
+  { id: 'follow',      label: 'Follow' },
   { id: 'review',      label: 'Review' },
 ];
 
@@ -357,6 +403,76 @@ function CalibrationStep({
           disabled={!okToContinue || submitting}
           onClick={onContinue}
         >
+          Continue to followed DAOs →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 3 — Follow (pick which DAOs autopilot should watch)
+// ---------------------------------------------------------------------------
+
+function FollowStep({
+  allowlistedSpaces,
+  followed,
+  onToggle,
+  onBack,
+  onContinue,
+  submitting,
+}: {
+  allowlistedSpaces: string[];
+  followed: Set<string>;
+  onToggle: (space: string) => void;
+  onBack: () => void;
+  onContinue: () => void;
+  submitting: boolean;
+}) {
+  const okToContinue = !submitting; // even zero-selected is allowed; user gets a banner later
+  return (
+    <div className="card onboarding-card">
+      <h3>Which DAOs should the agent watch?</h3>
+      <p className="muted" style={{ fontSize: 13.5, marginTop: 6, marginBottom: 14 }}>
+        Autopilot only scans proposals in DAOs you follow. Pre-checked: every DAO this deploy
+        supports. Uncheck any you don&rsquo;t care about — you can change this later in the policy editor.
+      </p>
+
+      {allowlistedSpaces.length === 0 ? (
+        <p className="editor-helper-empty">
+          No DAOs configured in this deploy. The operator needs to set DAO_SPACE_PUBLIC and
+          SNAPSHOT_FALLBACK_SPACES_PUBLIC.
+        </p>
+      ) : (
+        <div className="editor-checkbox-grid">
+          {allowlistedSpaces.map((space) => (
+            <label key={space} className="editor-checkbox">
+              <input
+                type="checkbox"
+                checked={followed.has(space)}
+                onChange={() => onToggle(space)}
+              />
+              <span>{space}</span>
+            </label>
+          ))}
+        </div>
+      )}
+
+      <div className="onboarding-meta" style={{ marginTop: 16 }}>
+        <span className="muted tiny">
+          {followed.size}/{allowlistedSpaces.length} followed
+        </span>
+      </div>
+
+      <div className="onboarding-actions">
+        <button className="btn" onClick={onBack} disabled={submitting}>
+          ← Back
+        </button>
+        <button
+          className="btn primary"
+          disabled={!okToContinue}
+          onClick={onContinue}
+        >
           {submitting ? 'Compiling…' : 'Compile my policy →'}
         </button>
       </div>
@@ -427,16 +543,20 @@ function ReviewStep({
   profile,
   source,
   warnings,
+  followedSpaces,
   onBackToValues,
   onBackToCalibration,
+  onBackToFollow,
   onAccept,
   submitting,
 }: {
   profile: any;
   source: 'llm' | 'fallback';
   warnings: string[];
+  followedSpaces: string[];
   onBackToValues: () => void;
   onBackToCalibration: () => void;
+  onBackToFollow: () => void;
   onAccept: () => void;
   submitting: boolean;
 }) {
@@ -550,12 +670,28 @@ function ReviewStep({
         </div>
       )}
 
+      <div className="review-section">
+        <div className="dft-label">Followed DAOs</div>
+        {followedSpaces.length === 0 ? (
+          <p className="muted tiny">
+            Not following any DAOs. Autopilot will have nothing to scan; go back if that&rsquo;s not what you want.
+          </p>
+        ) : (
+          <p className="tiny muted" style={{ fontFamily: 'var(--mono)', lineHeight: 1.8 }}>
+            {followedSpaces.join(' · ')}
+          </p>
+        )}
+      </div>
+
       <div className="onboarding-actions">
         <button className="btn" onClick={onBackToValues} disabled={submitting}>
           ← Edit values
         </button>
         <button className="btn" onClick={onBackToCalibration} disabled={submitting}>
           Redo calibration
+        </button>
+        <button className="btn" onClick={onBackToFollow} disabled={submitting}>
+          Edit followed DAOs
         </button>
         <button className="btn primary" onClick={onAccept} disabled={submitting}>
           {submitting ? 'Saving…' : 'Looks right — save policy'}

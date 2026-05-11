@@ -70,10 +70,21 @@ export function Policy({
   }
 
   if (!profile?.profile) {
+    const primarySpace = publicEnv?.DAO_SPACE_PUBLIC
+      ? publicEnv.DAO_SPACE_PUBLIC.trim().toLowerCase()
+      : null;
+    const fallbackSpaces = parseSpaceList(publicEnv?.SNAPSHOT_FALLBACK_SPACES_PUBLIC);
+    const allowlistedSpaces = [
+      ...(primarySpace ? [primarySpace] : []),
+      ...fallbackSpaces.filter((s) => s !== primarySpace),
+    ];
     return (
       <>
         <SectionHeading>Set your preferences</SectionHeading>
-        <Onboarding onSaved={onProfileSaved} />
+        <Onboarding
+          onSaved={onProfileSaved}
+          allowlistedSpaces={allowlistedSpaces}
+        />
       </>
     );
   }
