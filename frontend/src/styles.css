@@ -2316,6 +2316,23 @@ input[type="range"] {
   color: var(--bg);
 }
 
+/* DaoBadge — per-proposal space label, same visual style as CAL/REAL.
+   Background is overridden inline for known spaces via the component;
+   the fallback gray applies to any unrecognized space id. */
+.dao-badge {
+  display: inline-block;
+  font-size: 9.5px;
+  font-family: var(--mono);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-right: 6px;
+  vertical-align: middle;
+  color: var(--bg);
+  background: var(--fg-soft);
+}
+
 .corpus-calibration {
   background: #d4a657;
 }
