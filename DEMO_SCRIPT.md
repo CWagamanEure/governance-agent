@@ -41,23 +41,29 @@ vote is traceable back to a specific saved policy version.
 
 The deployed TEE image must be at the latest commit for ACT 5 to work.
 The multi-DAO fan-out, the rewired Reset flow, the cleaned-up dashboard,
-and the editor diff grouping all live in commits since the last deploy.
+the editor diff grouping, the new Followed-DAOs onboarding step, and
+the cron poller all live in commits since the last deploy.
 
-Add the fallback-DAO env var to `.env.deploy` (or wherever your
-deployment env is sourced):
+**Required `.env.deploy` entries before upgrade:**
 ```
+DAO_SPACE_PUBLIC=arbitrumfoundation.eth
 SNAPSHOT_FALLBACK_SPACES_PUBLIC=gitcoindao.eth,gnosis.eth,kleros.eth
+GIT_COMMIT_PUBLIC=<git rev-parse HEAD value at deploy time>
+OPERATOR_ADDRESS_ALLOWLIST=0xYourWallet,0xTeammateWallet
+# AUTOPILOT_POLL_ENABLED=true   # optional; off-by-default keeps unattended runs safe
 ```
 
 Then upgrade:
 ```bash
 SHA=$(git rev-parse HEAD)
+# Pin the commit hash in .env.deploy before running this:
+sed -i.bak "s/^GIT_COMMIT_PUBLIC=.*/GIT_COMMIT_PUBLIC=$SHA/" .env.deploy
 ecloud compute app upgrade 0xc9645B5C0A942e4dE16525513FE36D48DA7D911d \
   --env-file .env.deploy --log-visibility public --verifiable \
   --repo https://github.com/CWagamanEure/governance-agent --commit "$SHA"
 ```
 
-Verify the deployed env from a curl:
+**Post-upgrade smoke checks:**
 ```bash
 curl -sS http://34.90.5.10:8000/env | jq
 # Expect MODEL_PUBLIC, MODEL_ROUTE_PUBLIC, GIT_COMMIT_PUBLIC matching $SHA,
@@ -65,7 +71,34 @@ curl -sS http://34.90.5.10:8000/env | jq
 
 curl -sS http://34.90.5.10:8000/submit-allowlist
 # Expect {"spaces":["arbitrumfoundation.eth","gitcoindao.eth","gnosis.eth","kleros.eth"]}.
+
+# Warm the attestation cache. AttestClient has no client-side timeout;
+# a cold /attestation call right at demo time could block. Hitting it
+# once after upgrade primes the report so ACT 5d renders cleanly.
+curl -sS http://34.90.5.10:8000/attestation | jq '.status'
+# Expect "available". If "unavailable", retry every 5s — first call
+# after a cold deploy can take 10-30s while KMS warms up.
+
+curl -sS http://34.90.5.10:8000/poller/status | jq '.enabled'
+# true if AUTOPILOT_POLL_ENABLED is on, false otherwise.
 ```
+
+**LLM gateway fallback (operator hot-swap)**
+
+The deployed image uses LLM_PROVIDER=auto, which prefers the Eigen gateway
+when KMS env is injected (always true on mainnet TEE). If the gateway
+returns 401 or other errors on demo day, hot-swap to direct Anthropic:
+
+```bash
+ecloud compute app upgrade 0xc9645B5C0A942e4dE16525513FE36D48DA7D911d \
+  --env LLM_PROVIDER=anthropic --env ANTHROPIC_API_KEY=sk-ant-... \
+  --commit "$SHA"
+```
+
+`test:compile-peel` validates that the heuristic fallback path (used
+when both gateway and direct Anthropic are unavailable) also reproduces
+the ACT 2 four-step peel — so even total LLM failure does not break the
+demo, only the LLM-route narration in the trust ribbon.
 
 ### Active-proposal contingency for ACT 5c
 
@@ -149,20 +182,29 @@ Worth having a screen recording of (a) ready in either case.
 > on commodity hardware to confirm the decision."
 
 Open the app on the Policy page. After Reset, the page is in onboarding
-mode — values box on the left, calibration set on the right.
+mode — a 4-step wizard (Values → Calibration → Follow → Review).
 
-Click **"Use example values"**. The values box fills with four
-representative stances (public goods funding, recurring program
-accountability, irreversibility, parameter changes). Click
-**Continue to calibration**.
+**Step 1 — Values.** A single text area at the top. Click
+**"Use example values"**. The text area fills with four representative
+stances (public goods funding, recurring program accountability,
+irreversibility, parameter changes). Click **Continue to calibration**.
 
-Click **"Use example calibration"**. Eight calibration proposals
-preselect a FOR / AGAINST / ABSTAIN answer with a short reason. Click
-**Save policy**.
+**Step 2 — Calibration.** A vertical stack of real past proposals,
+each with FOR / AGAINST / ABSTAIN buttons. Click **"Use example
+calibration"** to preselect 8 answers. Click **Continue to followed
+DAOs**.
+
+**Step 3 — Follow.** A checklist of every DAO this deploy supports,
+all pre-checked. Leave all four ticked for the demo so autopilot has
+something to watch. Click **Compile my policy**.
 
 The compile step runs (LLM if available, deterministic fallback
-otherwise). ProfileCard now shows version 1 of the freshly compiled
-policy with its content hash.
+otherwise — both paths are now validated by `npm run test:compile-peel`
+to reproduce the ACT 2 four-step peel).
+
+**Step 4 — Review.** Shows the compiled defaults, flags, hard limits,
+followed DAOs, and any warnings. Click **Looks right — save policy**.
+ProfileCard appears with version 1 and the content hash.
 
 > "Two minutes of inputs, hashed and versioned. Every signed decision
 > from now on references this exact hash."
