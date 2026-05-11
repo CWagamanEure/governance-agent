@@ -292,17 +292,27 @@ stays at 0 because nothing autovotes (still MANUAL_REVIEW).
 
 Now jump back to a permissive draft state — uncheck `META_GOVERNANCE`
 from manual_review_categories so the META proposal flips to ABSTAIN.
-The editor re-runs the diff. The Autopilot summary updates:
+The editor re-runs the diff. The Autopilot summary still says **0 of 48**.
+
+> "Code of Conduct flips to ABSTAIN, but the counter is still zero —
+> because my eligible decisions list only includes FOR. Autopilot
+> won't fire on a decision type I haven't explicitly opted in to.
+> That's the second safety layer."
+
+Click the **ABSTAIN** checkbox in the Eligible decisions row. The
+Autopilot summary updates:
 
 > Autopilot would currently vote on **1** of 48 cached proposals
-> (decisions: ABSTAIN must be in the eligibility list)
 
-> "If ABSTAIN is in my eligibility list, autopilot picks up the META
-> proposal. Drag the floor up to 0.95 — back to 0. The slider IS the
+The AUTO badge appears next to the Code of Conduct row in the diff
+panel.
+
+> "Now drag the floor up to 0.95 — back to 0. The slider IS the
 > trust contract."
 
-Verify the AUTO badge appears next to the Code of Conduct row in the
-diff panel as the slider crosses its confidence (0.91).
+(The Code of Conduct's confidence is around 0.91 — at floor 0.92+ it
+drops out, at 0.91 or below it qualifies. The badge appears and
+disappears as the slider crosses the threshold.)
 
 > "Every one of those slider positions, every checkbox, every
 > threshold — they all hash into the policy. When I save, that hash

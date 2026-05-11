@@ -181,7 +181,7 @@ function Dashboard({ tab }: { tab: Tab }) {
 
   async function resetDemoProgress() {
     const confirmed = window.confirm(
-      'Reset demo? This deletes your saved policy (all versions) and voting history so onboarding starts from scratch. Your wallet session stays signed in.',
+      'Reset demo? This wipes your votes and policy versions, then seeds the demo profile (DEMO_PROFILE) so the four-step ACT 2 peel produces deterministic flips. Your wallet session stays signed in.',
     );
     if (!confirmed) return;
 
