@@ -692,7 +692,21 @@ app.post('/auth/siwe/verify', async (c) => {
         403,
       );
     }
-    return c.json({ error: e?.message ?? String(e) }, 401);
+    // R12: MNEMONIC missing on local dev means issueSession() throws
+    // inside sessionSecret(). Without this catch the throw bubbles up
+    // as a generic 500. Surface a clean 503 with the operator-actionable
+    // message so a misconfigured local deploy gives a useful signal.
+    const msg = e?.message ?? String(e);
+    if (msg.includes('MNEMONIC required')) {
+      return c.json(
+        {
+          error: 'mnemonic_missing',
+          message: 'Server is misconfigured: MNEMONIC env var is required to derive session secrets.',
+        },
+        503,
+      );
+    }
+    return c.json({ error: msg }, 401);
   }
 });
 
@@ -1635,6 +1649,26 @@ app.post(
       );
     }
 
+    // R13: short-circuit when the user follows zero DAOs. Without this
+    // gate, the batch proceeds through Snapshot verification and returns
+    // a plan where every item is reason: space_not_followed — technically
+    // correct but a cryptic UX for a direct-API caller. The frontend
+    // AutopilotRunCard already blocks this client-side; this is for
+    // anyone hitting the endpoint via curl or a custom script.
+    const followedCount = Array.isArray(policy.followed_spaces)
+      ? policy.followed_spaces.length
+      : 0;
+    if (followedCount === 0) {
+      return c.json(
+        {
+          error: 'no_followed_spaces',
+          message:
+            'Your saved policy follows zero DAOs. Pick at least one in the policy editor before running autopilot.',
+        },
+        400,
+      );
+    }
+
     const batch = await runAutopilotBatch({
       userId: user.id,
       userAddress: address,
@@ -1699,15 +1733,18 @@ const port = Number(process.env.PORT ?? 8000);
 console.log(`[governance-agent] starting on :${port}`);
 serve({ fetch: app.fetch, port });
 
-// Background autopilot poller. No-op unless AUTOPILOT_POLL_ENABLED=true
-// (see src/cron.ts). Kicked off after serve() so a poller crash on
-// startup does not block the HTTP server from coming up.
-startAutopilotPoller();
-
-// Stop the poller cleanly on SIGTERM. ecloud upgrade sends SIGTERM
-// before SIGKILL, so we get a small window to drain. Without this,
-// an in-flight tick could be cut mid-LLM-call.
+// R5: register the SIGTERM handler BEFORE starting the poller. ecloud
+// upgrade sends SIGTERM before SIGKILL. If startAutopilotPoller schedules
+// its jittered setTimeout and SIGTERM arrives before the handler is wired,
+// Node's default handler terminates the process and stopAutopilotPoller
+// never runs — leaking the pending timeout. Registering first closes that
+// race window.
 process.on('SIGTERM', () => {
   console.log('[governance-agent] SIGTERM received; stopping poller');
   stopAutopilotPoller();
 });
+
+// Background autopilot poller. No-op unless AUTOPILOT_POLL_ENABLED=true
+// (see src/cron.ts). Kicked off after serve() so a poller crash on
+// startup does not block the HTTP server from coming up.
+startAutopilotPoller();

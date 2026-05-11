@@ -72,16 +72,17 @@ export function AutopilotRunCard({
       ...(daoSpace ? [daoSpace] : []),
       ...fallbackSpaces.filter((s) => s !== daoSpace),
     ];
-    // User's explicit follow list. Empty = nothing followed (B2 backfills
-    // the full allowlist into legacy empty profiles on editor-open, so an
-    // empty list at runtime represents a deliberate user choice to follow
-    // nothing). Intersect with the allowlist so a stale follow entry for
-    // a removed DAO is silently ignored.
+    // User's explicit follow list. Empty = nothing followed (F2 + F3
+    // semantics — empty means autopilot has nothing to do; the
+    // EmptyFollowsBanner directs the user to the editor). Lowercase
+    // both sides of the intersection so a legacy pre-F1 profile with
+    // mixed-case entries still matches the lowercased allowlist —
+    // R10 defense in depth.
     const userFollowed = Array.isArray(profile.profile_json?.followed_spaces)
       ? (profile.profile_json.followed_spaces as string[])
       : [];
-    const followedSet = new Set(userFollowed);
-    const spacesToScan = allowlistedSpaces.filter((s) => followedSet.has(s));
+    const followedSet = new Set(userFollowed.map((s) => s.toLowerCase()));
+    const spacesToScan = allowlistedSpaces.filter((s) => followedSet.has(s.toLowerCase()));
     const activeIdsBySpace = await Promise.all(
       spacesToScan.map((space) =>
         fetchActiveProposals(space, 8)
