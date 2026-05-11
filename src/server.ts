@@ -67,6 +67,7 @@ import {
   AuthRequiredError,
   OperatorNotAllowlistedError,
 } from './auth.js';
+import { takeToken } from './rate-limit.js';
 import { userWallet } from './wallets.js';
 import { compileProfile } from './profile-compiler.js';
 import { buildAttestationReport } from './attestation.js';
@@ -196,6 +197,33 @@ app.use('/*', cors({ origin: '*', allowHeaders: ['content-type', 'authorization'
 // Populate c.get('user_address') from a Bearer token if present. Does not
 // reject unauthed requests — handlers call requireAuth(c) when they need it.
 app.use('/*', readAuth);
+
+/**
+ * Per-user rate limit for LLM-bearing endpoints. Returns null if the
+ * request is allowed, or a JSON Response with a 429 + Retry-After
+ * header to be returned by the caller. Keying:
+ *   - Authed: user_address from the JWT.
+ *   - Anonymous: shared "anon" bucket. Cost-bearing endpoints already
+ *     require auth, so this is defense-in-depth for any handler that
+ *     forgets the gate.
+ */
+function checkRateLimit(c: Context): Response | null {
+  const addr = getAuthedAddress(c);
+  const key = addr ? `user:${addr.toLowerCase()}` : 'anon';
+  const decision = takeToken(key);
+  if (decision.allowed) return null;
+  const retryAfterSec = Math.ceil(decision.retryAfterMs / 1000);
+  return c.json(
+    {
+      error: 'rate_limited',
+      window: decision.window,
+      retry_after_ms: decision.retryAfterMs,
+      message: `Too many requests in the ${decision.window} window. Retry in ~${retryAfterSec}s.`,
+    },
+    429,
+    { 'Retry-After': String(retryAfterSec) },
+  );
+}
 
 app.get('/health', (c) => c.json({ ok: true, version: VERSION }));
 
@@ -458,6 +486,9 @@ app.post('/vote/sign', async (c) => {
  *     submission still goes through POST /vote/sign with submit=true.
  */
 app.post('/pipeline/run', async (c) => {
+  const limited = checkRateLimit(c);
+  if (limited) return limited;
+
   let body: any;
   try {
     body = await c.req.json();
@@ -741,6 +772,9 @@ app.post('/profile/compile', async (c) => {
     return c.json({ error: 'authentication required' }, 401);
   }
 
+  const limited = checkRateLimit(c);
+  if (limited) return limited;
+
   let body: any;
   try {
     body = await c.req.json();
@@ -963,6 +997,9 @@ app.post('/policy/preview', async (c) => {
   } catch {
     return c.json({ error: 'authentication required' }, 401);
   }
+
+  const limited = checkRateLimit(c);
+  if (limited) return limited;
 
   let body: any;
   try {
@@ -1510,6 +1547,9 @@ app.post(
     } catch {
       return c.json({ error: 'authentication required' }, 401);
     }
+
+    const limited = checkRateLimit(c);
+    if (limited) return limited;
 
     let body: any;
     try {
