@@ -39,6 +39,7 @@ import { signDecisionBlob } from './decision-blob.js';
 import {
   appendAudit,
   getCachedAnalysis,
+  getSubmittedProposalIdsForUser,
 } from './db.js';
 
 export type SubmitAuditInput = {
@@ -167,11 +168,16 @@ export async function runAutopilotBatch(args: AutopilotBatchArgs): Promise<Autop
     };
   }
 
-  // Step 2 — filter unverified / space-mismatched / non-followed items.
+  // Step 2 — filter unverified / space-mismatched / non-followed /
+  // already-voted items. The already-voted check guards against a
+  // recurring cron tick re-attempting a vote the user (or a prior
+  // tick) has already submitted. The audit chain is the source of
+  // truth for submitted votes; this query reads it directly.
   const followedSet = new Set<string>(
     Array.isArray(profile.followed_spaces) ? profile.followed_spaces : [],
   );
   const followedFilterActive = followedSet.size > 0;
+  const alreadyVoted = getSubmittedProposalIdsForUser(userId);
   const verificationFailures: PlanItem[] = [];
   const verifiedProposals: SnapshotProposalRaw[] = [];
   for (const p of proposals) {
@@ -211,6 +217,18 @@ export async function runAutopilotBatch(args: AutopilotBatchArgs): Promise<Autop
         confidence: null,
         eligible: false,
         reason: `space_not_followed: ${actualSpace}`,
+      });
+      continue;
+    }
+    if (alreadyVoted.has(v.id.toLowerCase())) {
+      verificationFailures.push({
+        proposal_id: p.id,
+        title: v.title,
+        space: actualSpace,
+        decision: null,
+        confidence: null,
+        eligible: false,
+        reason: 'already_voted',
       });
       continue;
     }

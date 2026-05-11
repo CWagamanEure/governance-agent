@@ -386,6 +386,34 @@ export function listAutopilotEnabledUsers(): AutopilotEnabledUserRow[] {
   return autopilotEnabledUsers.all() as AutopilotEnabledUserRow[];
 }
 
+/**
+ * Proposal ids the given user has already successfully voted on,
+ * derived from the audit log. The audit chain is the source of truth
+ * for submitted votes — the votes table exists in the schema but is
+ * not currently populated. Reading the audit log keeps dedup honest
+ * even for votes signed manually via the Activity tab or via
+ * /vote/sign + submit:true, not just autopilot runs.
+ *
+ * Includes status='submitted' AND status='failed' so the cron poller
+ * does not retry a vote that Snapshot has already rejected (typically
+ * because the wallet has no voting power, which will not change).
+ * That keeps a single failed vote from re-burning LLM tokens every
+ * tick. If we later want to retry transient errors, add a status
+ * column to differentiate.
+ */
+const submittedProposalsByUser = db.prepare(`
+  SELECT DISTINCT json_extract(payload_json, '$.proposal') AS proposal_id
+  FROM audit_log
+  WHERE event_type = 'VOTE_SUBMITTED'
+    AND user_id = ?
+    AND json_extract(payload_json, '$.proposal') IS NOT NULL
+`);
+
+export function getSubmittedProposalIdsForUser(user_id: string): Set<string> {
+  const rows = submittedProposalsByUser.all(user_id) as Array<{ proposal_id: string }>;
+  return new Set(rows.map((r) => r.proposal_id.toLowerCase()));
+}
+
 export function saveProfile(args: {
   user_id: string;
   profile: unknown;
