@@ -31,6 +31,7 @@ import {
   verifyEnvelope,
   submitVote,
   decisionToChoice,
+  verifyProposalsByIds,
   APP_NAME as SNAPSHOT_APP_NAME,
   type SignedVoteEnvelope,
 } from './snapshot.js';
@@ -1638,6 +1639,28 @@ app.post(
       ? { ...policy.autopilot, enabled: true }
       : policy.autopilot;
 
+    // Verify every proposal against Snapshot's public hub before we
+    // spend LLM tokens or sign anything. Without this gate, a caller
+    // could pass fabricated proposals with attacker-controlled bodies
+    // and claimed-but-fake space metadata — the agent would happily
+    // extract on the body (LLM cost) and try to submit (rejected by
+    // Snapshot but the request still goes out under the operator's
+    // identity). After verification we OVERWRITE caller-supplied body
+    // and space with the authoritative copy from the hub. The hub
+    // lookup is a single batched query (50 ids per call).
+    let verifiedById: Map<string, import('./snapshot.js').VerifiedProposal>;
+    try {
+      verifiedById = await verifyProposalsByIds(proposals.map((p) => p.id));
+    } catch (e) {
+      return c.json(
+        {
+          error: 'snapshot_verification_failed',
+          message: e instanceof Error ? e.message : String(e),
+        },
+        502,
+      );
+    }
+
     type PlanItem = {
       proposal_id: string;
       title: string | null;
@@ -1654,16 +1677,70 @@ app.post(
       submitted?: { ok: boolean; snapshot_url?: string; error?: string };
     };
 
-    // Plan phase setup: split proposals into cache-hits (free) and
-    // cache-misses (each triggers one live LLM call). We pay the live cost
-    // only up to liveExtractionBudget items per batch; the rest pass
+    // Pre-filter: any proposal not on the hub becomes not-eligible with
+    // proposal_not_found. Any proposal whose caller-claimed space does
+    // not match the hub becomes not-eligible with proposal_space_mismatch.
+    // For the rest, we mutate the in-memory proposal record to use the
+    // hub's body / title / space — downstream extraction and submit
+    // signing both read from this trusted copy.
+    const verificationFailures: PlanItem[] = [];
+    const verifiedProposals: SnapshotProposalRaw[] = [];
+    for (const p of proposals) {
+      const v = verifiedById.get(p.id.toLowerCase());
+      if (!v) {
+        verificationFailures.push({
+          proposal_id: p.id,
+          title: p.title ?? null,
+          space: p.space?.id ?? null,
+          decision: null,
+          confidence: null,
+          eligible: false,
+          reason: 'proposal_not_found_on_snapshot',
+        });
+        continue;
+      }
+      const claimedSpace = (p.space?.id ?? '').toLowerCase();
+      const actualSpace = v.space.id.toLowerCase();
+      if (claimedSpace && claimedSpace !== actualSpace) {
+        verificationFailures.push({
+          proposal_id: p.id,
+          title: v.title,
+          space: actualSpace,
+          decision: null,
+          confidence: null,
+          eligible: false,
+          reason: `proposal_space_mismatch: caller_said_${claimedSpace}_hub_says_${actualSpace}`,
+        });
+        continue;
+      }
+      // Replace caller-supplied fields with the hub's authoritative copy.
+      verifiedProposals.push({
+        id: v.id,
+        title: v.title,
+        body: v.body,
+        author: v.author,
+        type: v.type,
+        choices: v.choices,
+        start: v.start,
+        end: v.end,
+        state: v.state,
+        space: { id: v.space.id },
+      });
+    }
+    // From here on, work only with verifiedProposals. The original
+    // `proposals` array is no longer trusted; verificationFailures
+    // gets folded into the final plan after the plan-phase fan-out.
+
+    // Plan phase setup: split verified proposals into cache-hits (free)
+    // and cache-misses (each triggers one live LLM call). We pay the live
+    // cost only up to liveExtractionBudget items per batch; the rest pass
     // through as not-eligible with a clear reason so the operator sees
     // them and a follow-up batch can drain them. allowLive=false on a
     // pre-classified miss makes runPipeline skip the LLM call.
-    const allowLive: boolean[] = new Array(proposals.length).fill(true);
+    const allowLive: boolean[] = new Array(verifiedProposals.length).fill(true);
     let liveSlotsRemaining = liveExtractionBudget;
-    for (let i = 0; i < proposals.length; i++) {
-      const hasCache = getCachedAnalysis(proposals[i].id, EXTRACTION_SCHEMA_VERSION) !== null;
+    for (let i = 0; i < verifiedProposals.length; i++) {
+      const hasCache = getCachedAnalysis(verifiedProposals[i].id, EXTRACTION_SCHEMA_VERSION) !== null;
       if (hasCache) continue;
       if (liveSlotsRemaining > 0) {
         liveSlotsRemaining -= 1;
@@ -1679,7 +1756,7 @@ app.post(
     // and timeouts are isolated — they produce a single not-eligible row
     // instead of crashing the batch.
     const settled = await Promise.allSettled(
-      proposals.map(async (p, i) => {
+      verifiedProposals.map(async (p, i) => {
         const space = p.space?.id ?? null;
         // Budget-exceeded items: do not call the LLM. Cache hit still
         // works because runPipeline falls through to live only after
@@ -1750,9 +1827,9 @@ app.post(
         } satisfies PlanItem;
       }),
     );
-    const plan: PlanItem[] = settled.map((s, i) => {
+    const fanoutPlan: PlanItem[] = settled.map((s, i) => {
       if (s.status === 'fulfilled') return s.value;
-      const p = proposals[i];
+      const p = verifiedProposals[i];
       const errMsg = s.reason instanceof Error ? s.reason.message : String(s.reason);
       const isTimeout = errMsg.startsWith('extraction_timeout_');
       return {
@@ -1765,6 +1842,9 @@ app.post(
         reason: isTimeout ? `extraction_timeout: ${errMsg}` : `pipeline_error: ${errMsg}`,
       };
     });
+    // Fold verification failures back in so the response reflects every
+    // proposal the caller submitted, in original order.
+    const plan: PlanItem[] = [...verificationFailures, ...fanoutPlan];
 
     if (dryRun) {
       const eligibleCount = plan.filter((p) => p.eligible).length;
@@ -1804,7 +1884,11 @@ app.post(
 
     for (let i = 0; i < willSubmit.length; i++) {
       const item = willSubmit[i];
-      const original = proposals.find((p) => p.id === item.proposal_id)!;
+      // Look up the verified proposal record (hub-authoritative body and
+      // metadata) rather than the caller-supplied one. verificationFailures
+      // were already filtered out before the plan phase, so an eligible
+      // item is guaranteed to have a verified entry.
+      const original = verifiedProposals.find((p) => p.id === item.proposal_id)!;
       // Re-grab cached for this proposal. Normally guaranteed to exist —
       // plan phase wrote through after a live extraction — but pipeline.ts
       // swallows cache-write failures (intentional: a write failure should

@@ -39,6 +39,85 @@ export const VOTE_TYPES = {
 
 export const APP_NAME = 'governance-agent';
 export const SNAPSHOT_SEQUENCER_URL = 'https://seq.snapshot.org';
+export const SNAPSHOT_HUB_URL = 'https://hub.snapshot.org/graphql';
+
+// ---------------------------------------------------------------------------
+// Proposal verification against the public hub
+// ---------------------------------------------------------------------------
+
+/**
+ * Authoritative fields we accept from Snapshot's GraphQL hub for a given
+ * proposal id. Trusted as ground truth for downstream extraction: the
+ * caller of /pipeline/autopilot-run supplies proposal records in the
+ * request body, and we replace caller-supplied fields with these to
+ * prevent prompt-injection or space-spoofing attacks.
+ *
+ * Returned as a plain object (not the typed SnapshotProposalRaw) to
+ * avoid a circular import with pipeline.ts.
+ */
+export type VerifiedProposal = {
+  id: string;
+  title: string;
+  body: string;
+  author: string;
+  type: string;
+  choices: string[];
+  start: number;
+  end: number;
+  state: string;
+  space: { id: string };
+};
+
+const VERIFY_QUERY = `query Verify($ids: [String!]!) {
+  proposals(first: 50, where: { id_in: $ids }) {
+    id
+    title
+    body
+    author
+    type
+    choices
+    start
+    end
+    state
+    space { id }
+  }
+}`;
+
+/**
+ * Look up the given proposal ids on Snapshot's public hub. Returns a Map
+ * keyed by lowercased id → VerifiedProposal. Ids not present in the
+ * response (typos, fabricated ids, archived proposals) are simply
+ * omitted from the map; callers should treat a missing entry as
+ * "proposal not found." Throws only on network or schema failures.
+ *
+ * The hub allows up to ~50 ids per query; chunk the input list if you
+ * have more.
+ */
+export async function verifyProposalsByIds(
+  ids: string[],
+): Promise<Map<string, VerifiedProposal>> {
+  const out = new Map<string, VerifiedProposal>();
+  if (ids.length === 0) return out;
+  // Dedup + chunk (50 per call).
+  const unique = Array.from(new Set(ids));
+  for (let i = 0; i < unique.length; i += 50) {
+    const slice = unique.slice(i, i + 50);
+    const r = await fetch(SNAPSHOT_HUB_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query: VERIFY_QUERY, variables: { ids: slice } }),
+    });
+    if (!r.ok) {
+      throw new Error(`snapshot hub returned ${r.status}: ${await r.text()}`);
+    }
+    const json = (await r.json()) as { data?: { proposals?: VerifiedProposal[] } };
+    const proposals = json.data?.proposals ?? [];
+    for (const p of proposals) {
+      out.set(p.id.toLowerCase(), p);
+    }
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // Decision → choice mapping
