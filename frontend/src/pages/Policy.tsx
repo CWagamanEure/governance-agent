@@ -77,6 +77,12 @@ export function Policy({
   const token = getStoredToken();
 
   if (editing && token) {
+    const primarySpace = publicEnv?.DAO_SPACE_PUBLIC ?? null;
+    const fallbackSpaces = parseSpaceList(publicEnv?.SNAPSHOT_FALLBACK_SPACES_PUBLIC);
+    const allowlistedSpaces = [
+      ...(primarySpace ? [primarySpace] : []),
+      ...fallbackSpaces.filter((s) => s !== primarySpace),
+    ];
     return (
       <>
         <SectionHeading>Edit policy</SectionHeading>
@@ -89,6 +95,7 @@ export function Policy({
           key={profile.profile.id}
           token={token}
           baseProfile={profile.profile}
+          allowlistedSpaces={allowlistedSpaces}
           onSaved={() => {
             setEditing(false);
             onProfileSaved();

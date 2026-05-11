@@ -141,11 +141,17 @@ function clearPersistedDraft(profileId: string) {
 export function PolicyEditor({
   token,
   baseProfile,
+  allowlistedSpaces,
   onSaved,
   onCancel,
 }: {
   token: string;
   baseProfile: NonNullable<StoredProfile['profile']>;
+  // Union of DAO_SPACE_PUBLIC + SNAPSHOT_FALLBACK_SPACES_PUBLIC. The
+  // editor uses this to populate the FollowedSpacesField checklist and
+  // to backfill a legacy empty followed_spaces array with the full
+  // allowlist so the first save writes an explicit list.
+  allowlistedSpaces: string[];
   onSaved: () => void;
   onCancel: () => void;
 }) {
@@ -154,7 +160,20 @@ export function PolicyEditor({
   // unchecks. We track restoration so we can surface a small banner.
   const [draft, setDraft] = useState<Profile>(() => {
     const restored = readPersistedDraft(baseProfile.id, baseProfile.profile_json);
-    return restored ?? deepClone(baseProfile.profile_json);
+    const initial = restored ?? deepClone(baseProfile.profile_json);
+    // Legacy back-compat: profiles saved before B1 have followed_spaces=[]
+    // by Zod default. Treat empty as "user has not made an explicit pick
+    // yet" and pre-fill the full allowlist so the editor opens with
+    // every box checked, matching the pre-B3 implicit "watch everything"
+    // behavior. The save handler then writes whatever the user landed on.
+    if (
+      Array.isArray(initial.followed_spaces) &&
+      initial.followed_spaces.length === 0 &&
+      allowlistedSpaces.length > 0
+    ) {
+      initial.followed_spaces = [...allowlistedSpaces];
+    }
+    return initial;
   });
   const [restoredFromStorage, setRestoredFromStorage] = useState(() =>
     readPersistedDraft(baseProfile.id, baseProfile.profile_json) !== null,
@@ -397,6 +416,11 @@ export function PolicyEditor({
           <ManualReviewCategoriesField draft={draft} setDraft={setDraft} />
           <ManualReviewFlagsField draft={draft} setDraft={setDraft} />
           <HardRulesField draft={draft} setDraft={setDraft} />
+          <FollowedSpacesField
+            draft={draft}
+            setDraft={setDraft}
+            allowlistedSpaces={allowlistedSpaces}
+          />
           <AutopilotField
             draft={draft}
             setDraft={setDraft}
@@ -578,6 +602,60 @@ function CategoryDefaultsField({ draft, setDraft }: { draft: Profile; setDraft: 
           {d.reason && <div className="editor-rule-reason muted tiny">{d.reason}</div>}
         </div>
       ))}
+    </section>
+  );
+}
+
+function FollowedSpacesField({
+  draft,
+  setDraft,
+  allowlistedSpaces,
+}: {
+  draft: Profile;
+  setDraft: (p: Profile) => void;
+  allowlistedSpaces: string[];
+}) {
+  const followed = new Set<string>(
+    Array.isArray(draft.followed_spaces) ? draft.followed_spaces : [],
+  );
+  function toggle(space: string) {
+    const next = new Set(followed);
+    if (next.has(space)) next.delete(space);
+    else next.add(space);
+    setDraft({ ...draft, followed_spaces: [...next] });
+  }
+  if (allowlistedSpaces.length === 0) {
+    return (
+      <section className="editor-section">
+        <h4>Followed DAOs</h4>
+        <p className="muted tiny">
+          No DAOs are configured in the deploy environment. Ask the operator
+          to set DAO_SPACE_PUBLIC (and optionally
+          SNAPSHOT_FALLBACK_SPACES_PUBLIC) so this user can pick which to
+          follow.
+        </p>
+      </section>
+    );
+  }
+  return (
+    <section className="editor-section">
+      <h4>Followed DAOs</h4>
+      <p className="muted tiny">
+        Autopilot only scans proposals in DAOs you follow. Unchecking a DAO
+        keeps the deploy from spending LLM tokens on its proposals for you.
+      </p>
+      <div className="editor-checkbox-grid">
+        {allowlistedSpaces.map((space) => (
+          <label key={space} className="editor-checkbox">
+            <input
+              type="checkbox"
+              checked={followed.has(space)}
+              onChange={() => toggle(space)}
+            />
+            <span>{space}</span>
+          </label>
+        ))}
+      </div>
     </section>
   );
 }
