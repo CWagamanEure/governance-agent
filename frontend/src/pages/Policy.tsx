@@ -8,8 +8,6 @@ import { type AttestationStub, type StoredProfile, type WalletInfo } from '../ap
 import { getStoredToken } from '../lib/auth';
 import { Onboarding } from '../Onboarding';
 import { PolicyEditor } from '../PolicyEditor';
-import { SignAndVerifyCard } from '../SignAndVerifyCard';
-import { AutopilotRunCard } from '../AutopilotRunCard';
 import { PollerStatusCard } from '../PollerStatusCard';
 import { AttestationCard } from '../AttestationCard';
 import { ConnectGate, SectionHeading } from './Activity';
@@ -131,34 +129,6 @@ export function Policy({
         onEditRules={() => setEditing(true)}
         onRecompile={onEdit}
       />
-      {token && profile.profile && (
-        <div style={{ marginTop: 16 }}>
-          <SignAndVerifyCard
-            token={token}
-            profile={profile.profile}
-            daoSpace={publicEnv?.DAO_SPACE_PUBLIC
-              ? publicEnv.DAO_SPACE_PUBLIC.trim().toLowerCase()
-              : null}
-            fallbackSpaces={parseSpaceList(
-              publicEnv?.SNAPSHOT_FALLBACK_SPACES_PUBLIC,
-            )}
-          />
-        </div>
-      )}
-      {token && profile.profile && (
-        <div style={{ marginTop: 16 }}>
-          <AutopilotRunCard
-            token={token}
-            profile={profile.profile}
-            daoSpace={publicEnv?.DAO_SPACE_PUBLIC
-              ? publicEnv.DAO_SPACE_PUBLIC.trim().toLowerCase()
-              : null}
-            fallbackSpaces={parseSpaceList(
-              publicEnv?.SNAPSHOT_FALLBACK_SPACES_PUBLIC,
-            )}
-          />
-        </div>
-      )}
       {token && profile.profile && (
         <div style={{ marginTop: 16 }}>
           <PollerStatusCard />

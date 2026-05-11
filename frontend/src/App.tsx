@@ -216,9 +216,8 @@ function Dashboard({ tab }: { tab: Tab }) {
     : null;
 
   // Derived once and threaded to every consumer that needs to fan across
-  // the allowlisted DAOs (Activity, Proposals, Policy → SignAndVerifyCard,
-  // Policy → AutopilotRunCard). publicEnv exposes the primary DAO directly
-  // and the comma-separated fallback list.
+  // the allowlisted DAOs (Activity, Proposals tabs). publicEnv exposes
+  // the primary DAO directly and the comma-separated fallback list.
   const primaryDaoSpace = info?.env?.DAO_SPACE_PUBLIC
     ? info.env.DAO_SPACE_PUBLIC.trim().toLowerCase()
     : null;
