@@ -10,10 +10,6 @@
  * setInterval timer is sufficient — no distributed locking. If we ever
  * scale horizontally, switch to a queued job runner (or skip the
  * deploy-wide poller and let users trigger from the UI only).
- *
- * Skeleton: this module installs the timer and exposes a status getter.
- * The actual per-user work happens in runPollTick (C2), already-voted
- * dedup (C3), and the status surface (C4) consumes lastTickStatus().
  */
 
 import { appendAudit, listAutopilotEnabledUsers } from './db.js';
@@ -35,24 +31,47 @@ export type PollTickStatus = {
   userCount: number;
   itemsScored: number;
   itemsSubmitted: number;
+  /**
+   * Optional skip reason when the tick performed no per-user work.
+   * Distinguishes:
+   *   - 'no_allowlist'  — SUBMIT_ALLOWLIST empty; refused to act.
+   *   - 'no_users'      — nobody opted in.
+   *   - 'overlap'       — previous tick still running.
+   * Absent on a normal successful tick.
+   */
+  skipped?: 'no_allowlist' | 'no_users' | 'overlap';
   errors: Array<{ user_id?: string; message: string }>;
 };
 
 const state: {
   intervalHandle: NodeJS.Timeout | null;
+  timeoutHandle: NodeJS.Timeout | null; // initial jitter timeout (M1)
   enabled: boolean;
   intervalMs: number;
   ticks: number;
   lastTick: PollTickStatus | null;
   inFlight: boolean;
+  /**
+   * Per-user count of consecutive wallet_unavailable failures (M6).
+   * After WALLET_FAIL_THRESHOLD consecutive failures we skip the user
+   * for the rest of the process lifetime — MNEMONIC issues never
+   * self-heal, so retrying every interval just spams the audit log.
+   */
+  walletFailures: Map<string, number>;
+  permanentlySkipped: Set<string>;
 } = {
   intervalHandle: null,
+  timeoutHandle: null,
   enabled: false,
   intervalMs: 0,
   ticks: 0,
   lastTick: null,
   inFlight: false,
+  walletFailures: new Map(),
+  permanentlySkipped: new Set(),
 };
+
+const WALLET_FAIL_THRESHOLD = 3;
 
 function readEnvBool(name: string): boolean {
   return process.env[name] === 'true';
@@ -67,20 +86,16 @@ function readEnvInt(name: string, defaultValue: number, min: number, max: number
 }
 
 /**
- * One poll iteration. Per-user iteration lives in C2 — this skeleton
- * just records that a tick happened and updates state. Caller is the
- * setInterval timer; do not call directly.
+ * One poll iteration. Wrapped in try/finally so a single bad tick
+ * does not kill the timer AND so every tick records itself in the
+ * audit log, even on the error path. Caller is the setInterval
+ * timer; do not call directly.
  *
- * Wrapped in try/catch so a single bad tick does not kill the timer.
- * Sets inFlight to true for the duration so an extra-long tick cannot
- * overlap with the next scheduled tick (we just skip the new tick).
+ * inFlight prevents an extra-long tick from overlapping with the
+ * next scheduled tick — the late tick records an 'overlap' skip
+ * row and exits.
  */
 async function runPollTick(): Promise<void> {
-  if (state.inFlight) {
-    console.warn('[cron] previous tick still in flight, skipping this one');
-    return;
-  }
-  state.inFlight = true;
   const tick: PollTickStatus = {
     startedAt: Date.now(),
     finishedAt: null,
@@ -89,6 +104,22 @@ async function runPollTick(): Promise<void> {
     itemsSubmitted: 0,
     errors: [],
   };
+
+  if (state.inFlight) {
+    // M5: record the overlap rather than silently dropping the tick.
+    tick.skipped = 'overlap';
+    tick.finishedAt = Date.now();
+    console.warn('[cron] previous tick still in flight, skipping this one');
+    appendAudit({
+      event_type: 'autopilot_poll_tick',
+      payload: { tick_number: state.ticks, skipped: 'overlap' },
+    });
+    // Do NOT mutate state.lastTick for an overlap — the in-flight tick
+    // is the meaningful one. But surface the skip via the audit chain.
+    return;
+  }
+
+  state.inFlight = true;
   try {
     state.ticks += 1;
     console.log(`[cron] tick #${state.ticks} at ${new Date(tick.startedAt).toISOString()}`);
@@ -97,11 +128,8 @@ async function runPollTick(): Promise<void> {
     // there is nothing autopilot could legally submit to — skip work.
     const allowlist = getSubmitAllowlist();
     if (allowlist.length === 0) {
+      tick.skipped = 'no_allowlist';
       console.warn('[cron] no SUBMIT_ALLOWLIST configured; tick is a no-op');
-      appendAudit({
-        event_type: 'autopilot_poll_tick',
-        payload: { tick_number: state.ticks, skipped: 'no_allowlist' },
-      });
       return;
     }
 
@@ -109,10 +137,7 @@ async function runPollTick(): Promise<void> {
     const users = listAutopilotEnabledUsers();
     tick.userCount = users.length;
     if (users.length === 0) {
-      appendAudit({
-        event_type: 'autopilot_poll_tick',
-        payload: { tick_number: state.ticks, user_count: 0 },
-      });
+      tick.skipped = 'no_users';
       return;
     }
 
@@ -121,6 +146,9 @@ async function runPollTick(): Promise<void> {
     // and run the autopilot batch. We do users sequentially so the
     // LLM-extraction load is predictable (no fan-out across users).
     for (const userRow of users) {
+      // M6: skip users we've already given up on this process lifetime.
+      if (state.permanentlySkipped.has(userRow.user_id)) continue;
+
       let profile: PolicyProfileT;
       try {
         const raw = JSON.parse(userRow.profile_json);
@@ -188,24 +216,38 @@ async function runPollTick(): Promise<void> {
       });
       if (result.fatal) {
         tick.errors.push({ user_id: userRow.user_id, message: `${result.fatal.code}: ${result.fatal.message}` });
+        // M6: wallet_unavailable cannot self-heal across ticks
+        // (MNEMONIC missing or derivation broken). Count consecutive
+        // failures per user and stop trying after the threshold.
+        // Other fatal codes (snapshot_verification_failed) can be
+        // transient and should keep retrying.
+        if (result.fatal.code === 'wallet_unavailable') {
+          const prev = state.walletFailures.get(userRow.user_id) ?? 0;
+          const next = prev + 1;
+          state.walletFailures.set(userRow.user_id, next);
+          if (next >= WALLET_FAIL_THRESHOLD) {
+            state.permanentlySkipped.add(userRow.user_id);
+            console.warn(
+              `[cron] user ${userRow.user_id} hit wallet_unavailable ${next} times; ` +
+                `permanently skipping for this process lifetime`,
+            );
+            appendAudit({
+              event_type: 'autopilot_user_permanently_skipped',
+              user_id: userRow.user_id,
+              payload: { reason: 'wallet_unavailable', consecutive_failures: next },
+            });
+          }
+        }
         continue;
       }
+      // Successful batch resets the wallet-failure counter — a flap
+      // does not stack against the user's quota.
+      state.walletFailures.delete(userRow.user_id);
       tick.itemsScored += result.plan.filter(
         (p) => p.decision !== null,
       ).length;
       tick.itemsSubmitted += result.submitted_count;
     }
-
-    appendAudit({
-      event_type: 'autopilot_poll_tick',
-      payload: {
-        tick_number: state.ticks,
-        user_count: tick.userCount,
-        items_scored: tick.itemsScored,
-        items_submitted: tick.itemsSubmitted,
-        error_count: tick.errors.length,
-      },
-    });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     tick.errors.push({ message });
@@ -214,6 +256,21 @@ async function runPollTick(): Promise<void> {
     tick.finishedAt = Date.now();
     state.lastTick = tick;
     state.inFlight = false;
+    // M3: write the audit row on every path. Even an empty / error /
+    // skipped tick records itself in the audit chain so the operator
+    // can prove the poller ran (and what it found) without trusting
+    // wall-clock claims from outside the TEE.
+    appendAudit({
+      event_type: 'autopilot_poll_tick',
+      payload: {
+        tick_number: state.ticks,
+        user_count: tick.userCount,
+        items_scored: tick.itemsScored,
+        items_submitted: tick.itemsSubmitted,
+        error_count: tick.errors.length,
+        ...(tick.skipped ? { skipped: tick.skipped } : {}),
+      },
+    });
   }
 }
 
@@ -227,7 +284,9 @@ async function runPollTick(): Promise<void> {
  * minute. Subsequent ticks run at the regular interval.
  */
 export function startAutopilotPoller(): void {
-  if (state.intervalHandle) {
+  // M1: guard against double-start. Either the timeout or interval
+  // being non-null means the poller is already scheduled.
+  if (state.timeoutHandle || state.intervalHandle) {
     console.warn('[cron] startAutopilotPoller called twice; ignoring');
     return;
   }
@@ -249,9 +308,11 @@ export function startAutopilotPoller(): void {
   console.log(
     `[cron] poller enabled, interval=${state.intervalMs}ms, first tick in ${jitterMs}ms`,
   );
-  // First tick is jittered, subsequent ticks are fixed-interval. We use
-  // setTimeout for the first one, then setInterval for the steady state.
-  setTimeout(() => {
+  // First tick is jittered, subsequent ticks are fixed-interval. M1:
+  // store the timeout handle so stopAutopilotPoller can cancel a
+  // pending first tick on SIGTERM.
+  state.timeoutHandle = setTimeout(() => {
+    state.timeoutHandle = null;
     void runPollTick();
     state.intervalHandle = setInterval(() => {
       void runPollTick();
@@ -260,11 +321,18 @@ export function startAutopilotPoller(): void {
 }
 
 export function stopAutopilotPoller(): void {
+  // M1: cancel both the pending first-tick setTimeout AND the
+  // steady-state setInterval. Either may be live depending on whether
+  // SIGTERM arrived during the jitter window or after.
+  if (state.timeoutHandle) {
+    clearTimeout(state.timeoutHandle);
+    state.timeoutHandle = null;
+  }
   if (state.intervalHandle) {
     clearInterval(state.intervalHandle);
     state.intervalHandle = null;
-    console.log('[cron] poller stopped');
   }
+  console.log('[cron] poller stopped');
 }
 
 /**

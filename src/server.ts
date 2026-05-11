@@ -741,6 +741,13 @@ app.post('/profile', async (c) => {
   // casing the env / UI rendered, but downstream intersections (cron, autopilot)
   // compare against the lowercased SUBMIT_ALLOWLIST. Lowercasing at the save
   // boundary gives us a single canonical form across reads.
+  //
+  // M4: also intersect with the live deploy allowlist. A stale follow entry
+  // for a space the operator has removed from SUBMIT_ALLOWLIST cannot be
+  // submitted to (the outer gate would reject), so persisting it serves no
+  // purpose and just clutters the saved profile. Filter it out at the save
+  // boundary so the canonical form contains only currently-usable spaces.
+  const allowlistedAtSave = new Set(getSubmitAllowlist());
   const normalizedProfile = {
     ...parsed.data,
     followed_spaces: Array.isArray(parsed.data.followed_spaces)
@@ -748,7 +755,8 @@ app.post('/profile', async (c) => {
           new Set(
             parsed.data.followed_spaces
               .map((s: string) => s.trim().toLowerCase())
-              .filter(Boolean),
+              .filter(Boolean)
+              .filter((s: string) => allowlistedAtSave.has(s)),
           ),
         )
       : [],

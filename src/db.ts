@@ -410,8 +410,18 @@ const submittedProposalsByUser = db.prepare(`
 `);
 
 export function getSubmittedProposalIdsForUser(user_id: string): Set<string> {
-  const rows = submittedProposalsByUser.all(user_id) as Array<{ proposal_id: string }>;
-  return new Set(rows.map((r) => r.proposal_id.toLowerCase()));
+  // M2: defensive type-check. Current callers always write a string
+  // proposal id, but a future audit row with a numeric or object
+  // payload.proposal field would crash .toLowerCase() and blow up
+  // dedup for the rest of the tick. Skip non-string rows quietly.
+  const rows = submittedProposalsByUser.all(user_id) as Array<{ proposal_id: unknown }>;
+  const out = new Set<string>();
+  for (const r of rows) {
+    if (typeof r.proposal_id === 'string' && r.proposal_id.length > 0) {
+      out.add(r.proposal_id.toLowerCase());
+    }
+  }
+  return out;
 }
 
 export function saveProfile(args: {
