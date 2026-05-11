@@ -155,6 +155,11 @@ Compile the PolicyProfile.`;
 // Lower quality than LLM compile but always works.
 // ---------------------------------------------------------------------------
 
+// Exported under a test-only name so test:compile-peel can validate
+// the fallback path without going through compileProfile() (which
+// tries the LLM first). Not part of the public API.
+export const _internal_fallbackCompile_for_test = fallbackCompile;
+
 function fallbackCompile(input: CompileInput): PolicyProfileT {
   const text = input.stated_values_text.toLowerCase();
 
@@ -186,17 +191,43 @@ function fallbackCompile(input: CompileInput): PolicyProfileT {
     schema_version: 'policy-v2',
     default_action: cautious ? 'MANUAL_REVIEW' : 'ABSTAIN',
     category_defaults: [
-      {
-        category: 'GRANT',
-        action: cautious ? 'MANUAL_REVIEW' : 'FOR',
-        max_treasury_usd: grantCap,
-        require_milestones: true,
-        require_reporting: !wantsGrowth,
-        proposer_types: [],
-        reason: cautious
-          ? 'review grants unless they are explicitly approved later'
-          : `routine grant under $${grantCap.toLocaleString()} with accountability`,
-      },
+      // Cautious profiles do NOT get a GRANT category_default; they
+      // rely on manual_review_categories including GRANT instead. That
+      // way the ACT 2 peel can add a fresh GRANT FOR rule in step 2
+      // without colliding with a pre-existing GRANT MANUAL_REVIEW rule.
+      // Matches DEMO_PROFILE's shape.
+      ...(cautious
+        ? []
+        : [
+            {
+              category: 'GRANT' as const,
+              action: 'FOR' as const,
+              max_treasury_usd: grantCap,
+              require_milestones: true,
+              require_reporting: !wantsGrowth,
+              proposer_types: [],
+              reason: `routine grant under $${grantCap.toLocaleString()} with accountability`,
+            },
+          ]),
+      // Cautious profiles ALSO get a META_GOVERNANCE → ABSTAIN category
+      // default so the demo's ACT 2 step-1 "uncheck META_GOVERNANCE"
+      // produces a meaningful flip (otherwise META falls through to the
+      // MANUAL_REVIEW default_action and 0 flips happen). Mirrors the
+      // hand-tuned DEMO_PROFILE under the same shaped inputs.
+      ...(cautious
+        ? [
+            {
+              category: 'META_GOVERNANCE' as const,
+              action: 'ABSTAIN' as const,
+              max_treasury_usd: null,
+              require_milestones: false,
+              require_reporting: false,
+              proposer_types: [],
+              reason:
+                'meta-governance defaults to abstain unless a specific rule applies',
+            },
+          ]
+        : []),
       ...(wantsGrowth
         ? [
             {
@@ -211,13 +242,28 @@ function fallbackCompile(input: CompileInput): PolicyProfileT {
           ]
         : []),
     ],
+    // Cautious profile mirrors DEMO_PROFILE's review categories so the
+    // ACT 2 peel reproduces against the fallback path: META_GOVERNANCE,
+    // PARTNERSHIP, GRANT each become "uncheckable" in the editor and
+    // produce the expected diff flips. Without these, an LLM-gateway
+    // outage at demo time would leave the demonstrator with a profile
+    // that cannot reproduce 1/1/1/3.
     manual_review_categories: [
       'CONTRACT_UPGRADE',
       'OWNERSHIP_TRANSFER',
-      ...(cautious ? (['TOKENOMICS', 'TREASURY_SPEND'] as const) : []),
+      ...(cautious
+        ? (['TOKENOMICS', 'META_GOVERNANCE', 'PARTNERSHIP', 'GRANT'] as const)
+        : []),
     ],
     manual_review_flags: [
-      'LOW_CONFIDENCE_EXTRACTION',
+      // LOW_CONFIDENCE_EXTRACTION is intentionally OFF for cautious
+      // profiles to match DEMO_PROFILE's shape. The cached extractions
+      // tag proposer.type as low-confidence on most proposals, which
+      // would otherwise mask the cleaner "category / flag" causality
+      // that the ACT 2 peel reveals. The unconditional low_conf_guard
+      // (priority 980, not user-toggleable) still catches the
+      // cal-019 mystery-grant case via overall extraction_confidence.
+      ...(cautious ? [] : (['LOW_CONFIDENCE_EXTRACTION'] as const)),
       'UNKNOWN_TREASURY_AMOUNT',
       'LARGE_TREASURY_SPEND',
       'CONTRACT_UPGRADE',

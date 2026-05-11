@@ -21,6 +21,7 @@
     "test:autopilot": "tsx scripts/test-autopilot.ts",
     "test:rate-limit": "tsx scripts/test-rate-limit.ts",
     "test:autopilot-cron": "tsx scripts/test-autopilot-cron.ts",
+    "test:compile-peel": "tsx scripts/test-compile-peel.ts",
     "pipeline": "tsx scripts/run-pipeline.ts"
   },
   "dependencies": {
