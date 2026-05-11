@@ -69,7 +69,12 @@ function isAutopilotEligibleClient(
 ): boolean {
   if (!autopilot?.enabled) return false;
   if (d.decision === 'MANUAL_REVIEW') return false;
-  if (!autopilot.decisions.includes(d.decision as AutopilotDecision)) return false;
+  // Defensive `?? []`: a stale draft state could carry decisions=undefined
+  // before the AutopilotField initializes its defaults. Without this
+  // guard, a TypeError mid-render would crash the editor on every
+  // keystroke. Predicate is canonical at src/policy.ts isAutopilotEligible
+  // — keep both copies in sync if either changes.
+  if (!(autopilot.decisions ?? []).includes(d.decision as AutopilotDecision)) return false;
   if (d.confidence < autopilot.min_confidence) return false;
   return true;
 }
@@ -732,6 +737,8 @@ function AutopilotField({
           onChange={(e) => update({ min_confidence: Number(e.target.value) })}
           className="autopilot-slider"
           disabled={!ap.enabled}
+          aria-label="Autopilot confidence floor"
+          aria-valuetext={`${(ap.min_confidence * 100).toFixed(0)} percent confidence`}
         />
       </label>
 
@@ -749,6 +756,12 @@ function AutopilotField({
           </label>
         ))}
       </div>
+      {ap.enabled && ap.decisions.length === 0 && (
+        <div className="autopilot-warning" style={{ marginTop: 6 }} role="alert">
+          ⚠ No decision types selected — autopilot will never fire. Pick at least one
+          (FOR / AGAINST / ABSTAIN).
+        </div>
+      )}
 
       <div
         className={`autopilot-summary ${ap.enabled ? 'on' : 'off'}`}
