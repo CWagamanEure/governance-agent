@@ -152,6 +152,18 @@ function ProfileCard({
   if (!profile.profile) return null;
   const p = profile.profile.profile_json;
   const hard = p.hard_rules ?? {};
+
+  const ap = p.autopilot ?? { enabled: false, min_confidence: 0.85 };
+  const apEnabled = ap.enabled === true;
+  const apFloor = typeof ap.min_confidence === 'number' ? ap.min_confidence : 0.85;
+
+  const followed = Array.isArray(p.followed_spaces) ? (p.followed_spaces as string[]) : [];
+  const stated = Array.isArray(p.stated_values) ? (p.stated_values as string[]) : [];
+  const categoryDefaults = Array.isArray(p.category_defaults) ? (p.category_defaults as any[]) : [];
+  const delegationRules = Array.isArray(p.delegation_rules) ? (p.delegation_rules as any[]) : [];
+  const reviewCats = Array.isArray(p.manual_review_categories) ? (p.manual_review_categories as string[]) : [];
+  const reviewFlags = Array.isArray(p.manual_review_flags) ? (p.manual_review_flags as string[]) : [];
+
   return (
     <div className="card profile-card">
       <div className="profile-head">
@@ -170,120 +182,111 @@ function ProfileCard({
         </div>
       </div>
 
-      {Array.isArray(p.stated_values) && p.stated_values.length > 0 && (
-        <div className="review-section" style={{ marginTop: 0, paddingTop: 0, borderTop: 'none' }}>
-          <div className="dft-label">Stated values</div>
-          <ul className="review-values" style={{ marginTop: 6 }}>
-            {(p.stated_values as string[]).map((v, i) => (
+      <div className={`profile-autopilot-pill ${apEnabled ? 'on' : 'off'}`}>
+        <span className="profile-autopilot-pill-label">AUTOPILOT</span>
+        <strong>{apEnabled ? 'enabled' : 'disabled'}</strong>
+        <span className="profile-autopilot-pill-sep">·</span>
+        <span>
+          floor <code>{apFloor.toFixed(2)}</code>
+        </span>
+        <span className="profile-autopilot-pill-sep">·</span>
+        <span>
+          {followed.length} DAO{followed.length === 1 ? '' : 's'} followed
+        </span>
+      </div>
+
+      <div className="profile-columns">
+        <div className="profile-column">
+          <h5 className="profile-column-head">How it votes</h5>
+          <div className="profile-row">
+            <span className="profile-row-label">Default action</span>
+            <span className="profile-row-val">{p.default_action ?? 'ABSTAIN'}</span>
+          </div>
+          <div className="profile-row profile-row-block">
+            <span className="profile-row-label">
+              Routine defaults ({categoryDefaults.length})
+            </span>
+            {categoryDefaults.length === 0 ? (
+              <span className="profile-row-empty">none</span>
+            ) : (
+              <ul className="profile-rule-list">
+                {categoryDefaults.map((d, i) => (
+                  <li key={`${d.category}-${i}`}>
+                    <code>{d.category}</code> → {d.action}
+                    {d.max_treasury_usd != null && (
+                      <span className="muted"> under ${Number(d.max_treasury_usd).toLocaleString()}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="profile-row profile-row-block">
+            <span className="profile-row-label">
+              Delegation ({delegationRules.length})
+            </span>
+            {delegationRules.length === 0 ? (
+              <span className="profile-row-empty">none</span>
+            ) : (
+              <ul className="profile-rule-list">
+                {delegationRules.map((d, i) => (
+                  <li key={`${d.category}-${d.delegate}-${i}`}>
+                    <code>{d.category}</code> → follow {d.delegate}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+
+        <div className="profile-column">
+          <h5 className="profile-column-head">When it stops</h5>
+          <div className="profile-row">
+            <span className="profile-row-label">Manual review</span>
+            <span
+              className="profile-row-val"
+              title={`Categories: ${reviewCats.join(', ') || 'none'}\nFlags: ${reviewFlags.join(', ') || 'none'}`}
+            >
+              {reviewCats.length} categories · {reviewFlags.length} flags
+            </span>
+          </div>
+          <div className="profile-row">
+            <span className="profile-row-label">Large treasury threshold</span>
+            <span className="profile-row-val">
+              {p.large_treasury_usd == null
+                ? '—'
+                : `$${Number(p.large_treasury_usd).toLocaleString()}`}
+            </span>
+          </div>
+          <div className="profile-row">
+            <span className="profile-row-label">Single-recipient cap</span>
+            <span className="profile-row-val">
+              {hard.max_single_recipient_treasury_usd == null
+                ? '—'
+                : `$${Number(hard.max_single_recipient_treasury_usd).toLocaleString()}`}
+            </span>
+          </div>
+          <div className="profile-row">
+            <span className="profile-row-label">Emission increases</span>
+            <span className="profile-row-val">
+              {hard.vote_against_emission_increases ? 'AGAINST' : 'allowed by defaults'}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {stated.length > 0 && (
+        <details className="profile-values-toggle">
+          <summary>
+            {stated.length} stated value{stated.length === 1 ? '' : 's'}
+          </summary>
+          <ul className="profile-values-list">
+            {stated.map((v, i) => (
               <li key={i}>{v}</li>
             ))}
           </ul>
-        </div>
+        </details>
       )}
-
-      <div className="review-section">
-        <div className="dft-label">Routine defaults</div>
-        {(p.category_defaults ?? []).length === 0 ? (
-          <p className="muted tiny">No category defaults. Unmatched proposals use {p.default_action ?? 'ABSTAIN'}.</p>
-        ) : (
-          <div className="rules-list" style={{ marginTop: 8 }}>
-            {(p.category_defaults as any[]).map((d, i) => (
-              <div key={`${d.category}-${i}`} className="rule">
-                <span className="id">{d.category}</span>
-                <span className="reason">— {d.action}</span>
-                {d.max_treasury_usd != null && (
-                  <span className="contrib"> under ${Number(d.max_treasury_usd).toLocaleString()}</span>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="profile-meta">
-        <div>
-          <span className="muted tiny">Default action</span>
-          <div className="profile-meta-val">{p.default_action ?? 'ABSTAIN'}</div>
-        </div>
-        <div>
-          <span className="muted tiny">Large treasury review</span>
-          <div className="profile-meta-val">
-            {p.large_treasury_usd == null ? '—' : `$${Number(p.large_treasury_usd).toLocaleString()}`}
-          </div>
-        </div>
-        <div>
-          <span className="muted tiny">Manual review categories</span>
-          <div className="profile-meta-val">
-            {(p.manual_review_categories ?? []).length} categories
-          </div>
-        </div>
-        <div>
-          <span className="muted tiny">Author blocklist</span>
-          <div className="profile-meta-val">
-            {(p.author_blocklist ?? []).length} addresses
-          </div>
-        </div>
-      </div>
-
-      <div className="review-section">
-        <div className="dft-label">Manual review flags</div>
-        <p className="tiny muted" style={{ fontFamily: 'var(--mono)', lineHeight: 1.8 }}>
-          {(p.manual_review_flags ?? []).join(' · ') || 'none'}
-        </p>
-      </div>
-
-      {(p.delegation_rules ?? []).length > 0 && (
-        <div className="review-section">
-          <div className="dft-label">Delegation</div>
-          <div className="rules-list" style={{ marginTop: 8 }}>
-            {(p.delegation_rules as any[]).map((d, i) => (
-              <div key={`${d.category}-${d.delegate}-${i}`} className="rule">
-                <span className="id">{d.category}</span>
-                <span className="reason">— follow {d.delegate}</span>
-                <span className="contrib"> fallback {d.fallback}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="review-section">
-        <div className="dft-label">Hard limits</div>
-        <p className="tiny muted">
-          Single recipient cap:{' '}
-          {hard.max_single_recipient_treasury_usd == null
-            ? '—'
-            : `$${Number(hard.max_single_recipient_treasury_usd).toLocaleString()}`}
-          {' · '}
-          Emission increases: {hard.vote_against_emission_increases ? 'AGAINST' : 'allowed by defaults'}
-        </p>
-      </div>
-
-      <AutopilotRow autopilot={p.autopilot} />
-    </div>
-  );
-}
-
-function AutopilotRow({
-  autopilot,
-}: {
-  autopilot:
-    | { enabled?: boolean; min_confidence?: number }
-    | undefined;
-}) {
-  const enabled = autopilot?.enabled === true;
-  const floor = typeof autopilot?.min_confidence === 'number' ? autopilot.min_confidence : 0.85;
-  return (
-    <div className="review-section">
-      <div className="dft-label">Autopilot</div>
-      <p className={`tiny ${enabled ? '' : 'muted'}`}>
-        Status:{' '}
-        <strong style={{ color: enabled ? 'var(--good, #6cd07a)' : 'var(--fg-soft)' }}>
-          {enabled ? 'enabled' : 'disabled'}
-        </strong>
-        {' · '}
-        Confidence floor: <code>{floor.toFixed(2)}</code>
-      </p>
     </div>
   );
 }
