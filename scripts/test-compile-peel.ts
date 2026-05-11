@@ -34,26 +34,13 @@ import {
 import { listCachedAnalyses } from '../src/db.js';
 import { EXTRACTION_SCHEMA_VERSION } from '../src/llm.js';
 
-// The exact strings the onboarding "Use example values" / "Use example
-// calibration" shortcuts inject. Kept in sync with frontend constants
-// in Onboarding.tsx; if those drift, update here too.
-const DEMO_VALUES = [
-  'I support funding public goods and developer infrastructure when the recipient is identifiable and the deliverables are measurable.',
-  'Large recurring treasury programs should require milestones, transparent reporting, and clear evidence that prior tranches worked.',
-  'I am cautious on irreversible contract upgrades and centralizing partnerships, even when the upside is real.',
-  'For routine technical parameter changes, I am comfortable following l2beat.eth unless the proposal changes core governance power.',
-].join(' ');
-
-const DEMO_CALIBRATION = [
-  { proposal_id: 'cal-001-stip-extension',         user_choice: 'AGAINST' as const, reason: 'Large recurring incentives with weak measurement should not be automatic.' },
-  { proposal_id: 'cal-003-pg-grant',               user_choice: 'FOR'     as const, reason: 'Public goods funding with broad recipients and quarterly reporting.' },
-  { proposal_id: 'cal-004-centralized-rpc',        user_choice: 'AGAINST' as const, reason: 'The exclusive default concentrates infrastructure power.' },
-  { proposal_id: 'cal-006-dip-update',             user_choice: 'FOR'     as const, reason: 'Paid delegate programs need accountability and public rationale.' },
-  { proposal_id: 'cal-007-bridge-upgrade',         user_choice: 'ABSTAIN' as const, reason: 'Audited but irreversible, so not an automatic vote.' },
-  { proposal_id: 'cal-010-doc-translation',        user_choice: 'FOR'     as const, reason: 'Small scoped grant with milestones and a known contributor team.' },
-  { proposal_id: 'cal-019-mystery-grant',          user_choice: 'AGAINST' as const, reason: 'Unidentified recipient, vague scope, no milestones, lump sum.' },
-  { proposal_id: 'cal-020-l2beat-followed-vote',   user_choice: 'FOR'     as const, reason: 'Routine reversible technical change aligned with a trusted delegate.' },
-];
+// Source of truth for the demo onboarding inputs. The frontend
+// Onboarding.tsx imports the SAME module, so this test cannot drift
+// from what the demo actually uses (F6).
+import {
+  DEMO_VALUES_TEXT as DEMO_VALUES,
+  DEMO_CALIBRATION_LIST as DEMO_CALIBRATION,
+} from '../frontend/src/data/demo-values-corpus.js';
 
 // Import the fallback compiler directly. We do not call compileProfile()
 // from the API surface — that would attempt the LLM first.

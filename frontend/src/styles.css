@@ -707,11 +707,43 @@ input[type="range"] {
 }
 .brand { display: flex; align-items: center; gap: 14px; }
 .brand-link {
-  color: var(--fg);
-  font-weight: 600;
-  font-size: 16px;
+  font-weight: 700;
+  font-size: 18px;
   text-decoration: none;
-  letter-spacing: -0.01em;
+  letter-spacing: 0.005em;
+  background-image: linear-gradient(
+    100deg,
+    #7c5cff 0%,
+    #b14bff 18%,
+    #ff5cc8 34%,
+    #ffb86b 50%,
+    #5ce1ff 66%,
+    #7c5cff 82%,
+    #b14bff 100%
+  );
+  background-size: 280% 100%;
+  background-position: 0% 50%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  filter: drop-shadow(0 0 12px rgba(124, 92, 255, 0.35))
+    drop-shadow(0 0 24px rgba(255, 92, 200, 0.18));
+  animation: galaxy-shift 14s ease-in-out infinite;
+  transition: filter 0.3s ease, letter-spacing 0.3s ease;
+}
+.brand-link:hover {
+  filter: drop-shadow(0 0 14px rgba(124, 92, 255, 0.55))
+    drop-shadow(0 0 28px rgba(255, 92, 200, 0.28));
+  letter-spacing: 0.02em;
+}
+@keyframes galaxy-shift {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .brand-link { animation: none; }
 }
 .dao-chip {
   font-family: var(--mono);
@@ -1004,12 +1036,14 @@ input[type="range"] {
 .profile-autopilot-pill-sep { color: var(--fg-soft); }
 
 /* Two-column body. Left = "How it votes" (defaults, routine, delegation).
-   Right = "When it stops" (manual review, hard limits). Equal weight,
-   each with its own header. */
+   Right = "When it stops" (manual review, hard limits). align-items:
+   start so a tall left column (e.g. 10+ category_defaults) does not
+   stretch the right column's borders into visible empty space (F7). */
 .profile-columns {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 24px;
+  align-items: start;
 }
 
 .profile-column h5.profile-column-head {

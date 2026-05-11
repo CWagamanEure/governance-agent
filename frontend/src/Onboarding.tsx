@@ -19,6 +19,10 @@ import { useState } from 'react';
 import { compileProfile, saveProfile } from './api';
 import { getStoredToken } from './lib/auth';
 import { CALIBRATION, type CalibrationProposal } from './data/calibration';
+import {
+  DEMO_VALUES_TEXT,
+  DEMO_CALIBRATION_BY_ID,
+} from './data/demo-values-corpus';
 
 type Step = 'values' | 'calibration' | 'follow' | 'review';
 
@@ -39,47 +43,12 @@ const VALUE_EXAMPLES = [
   "I'd rather see milestone-gated grants than lump-sum disbursements.",
 ];
 
-const DEMO_VALUES = [
-  'I support funding public goods and developer infrastructure when the recipient is identifiable and the deliverables are measurable.',
-  'Large recurring treasury programs should require milestones, transparent reporting, and clear evidence that prior tranches worked.',
-  'I am cautious on irreversible contract upgrades and centralizing partnerships, even when the upside is real.',
-  'For routine technical parameter changes, I am comfortable following l2beat.eth unless the proposal changes core governance power.',
-].join(' ');
-
-const DEMO_CALIBRATION: Record<string, { choice: Choice; reason: string }> = {
-  'cal-001-stip-extension': {
-    choice: 'AGAINST',
-    reason: 'Large recurring incentives with weak measurement should not be automatic.',
-  },
-  'cal-003-pg-grant': {
-    choice: 'FOR',
-    reason: 'Public goods funding with broad recipients and quarterly reporting.',
-  },
-  'cal-004-centralized-rpc': {
-    choice: 'AGAINST',
-    reason: 'The exclusive default concentrates infrastructure power.',
-  },
-  'cal-006-dip-update': {
-    choice: 'FOR',
-    reason: 'Paid delegate programs need accountability and public rationale.',
-  },
-  'cal-007-bridge-upgrade': {
-    choice: 'ABSTAIN',
-    reason: 'Audited but irreversible, so not an automatic vote.',
-  },
-  'cal-010-doc-translation': {
-    choice: 'FOR',
-    reason: 'Small scoped grant with milestones and a known contributor team.',
-  },
-  'cal-019-mystery-grant': {
-    choice: 'AGAINST',
-    reason: 'Unidentified recipient, vague scope, no milestones, lump sum.',
-  },
-  'cal-020-l2beat-followed-vote': {
-    choice: 'FOR',
-    reason: 'Routine reversible technical change aligned with a trusted delegate.',
-  },
-};
+// DEMO_VALUES + DEMO_CALIBRATION used to live inline here, but
+// scripts/test-compile-peel.ts had its own copies that could drift
+// silently. F6 moved both to ./data/demo-values-corpus.ts so the
+// test and the UI cannot diverge.
+const DEMO_VALUES = DEMO_VALUES_TEXT;
+const DEMO_CALIBRATION = DEMO_CALIBRATION_BY_ID;
 
 export function Onboarding({
   onSaved,

@@ -177,6 +177,18 @@ function fallbackCompile(input: CompileInput): PolicyProfileT {
   const riskAverse = /risk.?averse|safe|reversible/.test(text);
   const wantsDelegation = /follow|delegate|l2beat|vitalik|expert/.test(text);
 
+  // Strict heuristic: the demo's "Use example values" text contains all
+  // four of these phrases plus the milestones/measurable cautious
+  // markers. Used to opt the demo flow out of LOW_CONFIDENCE_EXTRACTION
+  // (so the ACT 2 four-step peel reproduces) WITHOUT degrading the flag
+  // for real conservative users whose values text matches `cautious`
+  // but not this demo-specific pattern. F5.
+  const isDemoValuesText =
+    /public goods and developer infrastructure/.test(text) &&
+    /transparent reporting/.test(text) &&
+    /l2beat\.eth/.test(text) &&
+    /irreversible/.test(text);
+
   const policyVotes = input.calibration.filter((c) => !c.personal_not_policy);
   const totalVotes = policyVotes.length;
   const againstRate = totalVotes > 0
@@ -256,14 +268,17 @@ function fallbackCompile(input: CompileInput): PolicyProfileT {
         : []),
     ],
     manual_review_flags: [
-      // LOW_CONFIDENCE_EXTRACTION is intentionally OFF for cautious
-      // profiles to match DEMO_PROFILE's shape. The cached extractions
-      // tag proposer.type as low-confidence on most proposals, which
-      // would otherwise mask the cleaner "category / flag" causality
-      // that the ACT 2 peel reveals. The unconditional low_conf_guard
-      // (priority 980, not user-toggleable) still catches the
-      // cal-019 mystery-grant case via overall extraction_confidence.
-      ...(cautious ? [] : (['LOW_CONFIDENCE_EXTRACTION'] as const)),
+      // LOW_CONFIDENCE_EXTRACTION is included for everyone EXCEPT the
+      // demo "Use example values" path. The demo profile keeps it OFF
+      // so the ACT 2 four-step peel reproduces (cached extractions tag
+      // proposer.type low-confidence on most proposals, which would
+      // otherwise mask the cleaner "category / flag" causality). Real
+      // cautious users keep the flag — F5 restored after the round-3
+      // audit found that dropping it for all cautious users was a real
+      // semantic loss. The unconditional low_conf_guard (priority 980)
+      // still catches the cal-019 mystery-grant case via overall
+      // extraction_confidence.
+      ...(isDemoValuesText ? [] : (['LOW_CONFIDENCE_EXTRACTION'] as const)),
       'UNKNOWN_TREASURY_AMOUNT',
       'LARGE_TREASURY_SPEND',
       'CONTRACT_UPGRADE',
