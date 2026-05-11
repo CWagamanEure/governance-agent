@@ -71,7 +71,7 @@ import { userWallet } from './wallets.js';
 import { compileProfile } from './profile-compiler.js';
 import { buildAttestationReport } from './attestation.js';
 import { DEMO_PROFILE } from './demo-profile.js';
-import { startAutopilotPoller, stopAutopilotPoller, pollerStatus } from './cron.js';
+import { startAutopilotPoller, stopAutopilotPoller } from './cron.js';
 import { runAutopilotBatch, auditVoteSubmission } from './autopilot.js';
 import { getSubmitAllowlist, isSpaceAllowedForSubmit } from './submit-allowlist.js';
 import {
@@ -1295,37 +1295,6 @@ app.post('/vote/submit', async (c) => {
  */
 app.get('/submit-allowlist', (c) => {
   return c.json({ spaces: getSubmitAllowlist() });
-});
-
-/**
- * GET /poller/status
- *
- * Public snapshot of the background autopilot poller. Used by the
- * Policy page to show "last polled at..." + per-tick counts so the
- * user can see that the agent is running between manual interactions.
- *
- * No auth: the aggregate is operational metadata. We deliberately
- * strip user_id from the errors array before responding — pollerStatus()
- * internally tags errors with user_id for ops debugging, but the public
- * shape only exposes the error message + a count, so a scraper cannot
- * harvest the set of opted-in user UUIDs from this endpoint.
- */
-app.get('/poller/status', (c) => {
-  const full = pollerStatus();
-  const safe = {
-    ...full,
-    lastTick: full.lastTick
-      ? {
-          ...full.lastTick,
-          // Drop user_id from each error row. The frontend status card
-          // only renders the count anyway; the message stays available
-          // (already free of user identifiers in practice — e.g.
-          // "snapshot_active_fetch_failed: timeout").
-          errors: full.lastTick.errors.map((e) => ({ message: e.message })),
-        }
-      : null,
-  };
-  return c.json(safe);
 });
 
 /**

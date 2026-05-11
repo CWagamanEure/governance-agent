@@ -22,12 +22,13 @@ import { WalletButton } from './WalletButton';
 import { Activity } from './pages/Activity';
 import { Proposals } from './pages/Proposals';
 import { Policy } from './pages/Policy';
+import { Trust } from './pages/Trust';
 
 // ---------------------------------------------------------------------------
 // Routing
 // ---------------------------------------------------------------------------
 
-type Tab = 'activity' | 'proposals' | 'policy';
+type Tab = 'activity' | 'proposals' | 'policy' | 'trust';
 
 // Parse a comma-separated space list from a public env var. Same shape as
 // the helper in pages/Policy.tsx and the backend's parseSpaceList. Trims
@@ -53,6 +54,7 @@ function useHashRoute(): string {
 function tabFromHash(hash: string): Tab {
   if (hash.startsWith('#/app/proposals')) return 'proposals';
   if (hash.startsWith('#/app/policy')) return 'policy';
+  if (hash.startsWith('#/app/trust')) return 'trust';
   return 'activity';
 }
 
@@ -277,6 +279,17 @@ function Dashboard({ tab }: { tab: Tab }) {
             verifyUrl={eigenVerifyUrl(info?.env ?? {})}
           />
         )}
+
+        {auth.status !== 'loading' && tab === 'trust' && (
+          <Trust
+            auth={auth}
+            profile={profile}
+            profileLoaded={profileReady}
+            onSignIn={handleSignIn}
+            daoSpace={primaryDaoSpace}
+            fallbackSpaces={fallbackDaoSpaces}
+          />
+        )}
       </main>
 
       <DashFooter info={info} error={error} />
@@ -304,6 +317,7 @@ const TABS: { id: Tab; label: string; href: string }[] = [
   { id: 'activity',  label: 'Activity',  href: '#/app/activity' },
   { id: 'proposals', label: 'Proposals', href: '#/app/proposals' },
   { id: 'policy',    label: 'Policy',    href: '#/app/policy' },
+  { id: 'trust',     label: 'Trust',     href: '#/app/trust' },
 ];
 
 function TopBar({

@@ -4,7 +4,7 @@
  * panel — small mono pill, dark text on a brand-tinted background, with the
  * full space id available as the hover title.
  *
- * Used in Activity, Proposals, AutopilotRunCard plan rows.
+ * Used in Activity and Proposals tab rows.
  *
  * Adding a new space: drop it in KNOWN_SPACES. Unknown spaces still render
  * with a stable fallback label (first chars of the space id) so the badge

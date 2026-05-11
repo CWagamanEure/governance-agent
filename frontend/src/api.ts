@@ -515,30 +515,6 @@ export type AutopilotRunResult = {
   capped: boolean;
 };
 
-export type PollerStatus = {
-  enabled: boolean;
-  intervalMs: number;
-  ticks: number;
-  inFlight: boolean;
-  lastTick: {
-    startedAt: number;
-    finishedAt: number | null;
-    userCount: number;
-    itemsScored: number;
-    itemsSubmitted: number;
-    // The HTTP endpoint sanitizes errors to drop user_id (so a scraper
-    // cannot harvest the set of opted-in user UUIDs). Internal callers
-    // of pollerStatus() in tests / ops scripts see the tagged form.
-    errors: Array<{ message: string }>;
-  } | null;
-};
-
-export async function getPollerStatus(): Promise<PollerStatus> {
-  const r = await fetch(`${BACKEND_URL}/poller/status`);
-  if (!r.ok) throw new Error(`poller status failed: ${r.status}`);
-  return r.json();
-}
-
 export async function runAutopilot(args: {
   token: string;
   proposals: any[];
