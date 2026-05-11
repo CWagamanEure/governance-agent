@@ -73,6 +73,7 @@ import { userWallet } from './wallets.js';
 import { compileProfile } from './profile-compiler.js';
 import { buildAttestationReport } from './attestation.js';
 import { DEMO_PROFILE } from './demo-profile.js';
+import { startAutopilotPoller, stopAutopilotPoller } from './cron.js';
 import {
   hashJson,
   DECISION_BLOB_DOMAIN,
@@ -2070,3 +2071,16 @@ if (existsSync(resolve(FRONTEND_DIST_DIR, 'index.html'))) {
 const port = Number(process.env.PORT ?? 8000);
 console.log(`[governance-agent] starting on :${port}`);
 serve({ fetch: app.fetch, port });
+
+// Background autopilot poller. No-op unless AUTOPILOT_POLL_ENABLED=true
+// (see src/cron.ts). Kicked off after serve() so a poller crash on
+// startup does not block the HTTP server from coming up.
+startAutopilotPoller();
+
+// Stop the poller cleanly on SIGTERM. ecloud upgrade sends SIGTERM
+// before SIGKILL, so we get a small window to drain. Without this,
+// an in-flight tick could be cut mid-LLM-call.
+process.on('SIGTERM', () => {
+  console.log('[governance-agent] SIGTERM received; stopping poller');
+  stopAutopilotPoller();
+});
