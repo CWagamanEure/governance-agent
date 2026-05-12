@@ -130,6 +130,22 @@ export type PipelineResult = {
 
 export const PIPELINE_VERSION = '0.2.0';
 
+// The prompt requires the LLM to emit field_confidence for these 8 paths.
+// Sonnet often adds many more optional sub-fields rated near-zero when they
+// don't apply (e.g. economics.* on a non-financial proposal); averaging all
+// reported fields drags every score down even for cleanly-structured
+// proposals. Restricting the mean to these 8 keeps the score discriminating.
+const REQUIRED_CONFIDENCE_FIELDS = [
+  'category',
+  'proposer.type',
+  'financial.treasury_spend_usd',
+  'financial.recipient_count',
+  'execution.requires_contract_upgrade',
+  'execution.reversible',
+  'governance.constitutional_change',
+  'beneficiaries.primary_scope',
+] as const;
+
 // ---------------------------------------------------------------------------
 // Orchestrator
 // ---------------------------------------------------------------------------
@@ -206,7 +222,9 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
       try {
         upsertProposal(input.proposal as any);
         const fc = result.analysis.uncertainty?.field_confidence ?? {};
-        const vals = Object.values(fc).filter((v): v is number => typeof v === 'number');
+        const vals = REQUIRED_CONFIDENCE_FIELDS
+          .map((k) => fc[k])
+          .filter((v): v is number => typeof v === 'number');
         const meanConf = vals.length === 0 ? 0 : vals.reduce((a, b) => a + b, 0) / vals.length;
         const inputHash = createHash('sha256')
           .update(JSON.stringify({
