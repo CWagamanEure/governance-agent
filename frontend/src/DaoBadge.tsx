@@ -16,6 +16,7 @@ const KNOWN_SPACES: Record<string, { label: string; color: string }> = {
   'gitcoindao.eth': { label: 'GTC', color: '#06d6a0' },
   'gnosis.eth': { label: 'SAFE', color: '#12ff80' },
   'kleros.eth': { label: 'PNK', color: '#9b6dff' },
+  'lido-snapshot.eth': { label: 'LDO', color: '#f69988' },
 };
 
 function fallbackLabel(space: string): string {
