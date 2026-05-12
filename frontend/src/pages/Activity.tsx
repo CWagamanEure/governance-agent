@@ -73,6 +73,36 @@ function recentKey(address: string): string {
   return `gov-agent:recent-activity:${address.toLowerCase()}`;
 }
 
+// Snapshot returns application-level rejections as JSON bodies like
+// {"error":"client_error","error_description":"no voting power"}. Pull
+// out the description and map the common patterns to human-readable
+// labels; fall back to a truncated raw message otherwise.
+function friendlySnapshotError(status: number, raw: string, space: string): string {
+  let description = raw;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.error_description === 'string') {
+      description = parsed.error_description;
+    } else if (parsed && typeof parsed.error === 'string') {
+      description = parsed.error;
+    }
+  } catch {
+    // raw was not JSON; use it as-is.
+  }
+
+  const lower = description.toLowerCase();
+  if (lower.includes('no voting power')) {
+    return `Snapshot rejected: this agent wallet has no voting power on ${space}. Delegate your voting power to the agent wallet on Snapshot to enable real submissions.`;
+  }
+  if (lower.includes('proposal') && (lower.includes('closed') || lower.includes('ended'))) {
+    return 'Snapshot rejected: the proposal has already closed.';
+  }
+  if (lower.includes('already voted') || lower.includes('duplicate')) {
+    return 'Snapshot rejected: this wallet has already voted on this proposal.';
+  }
+  return `Snapshot rejected (${status}): ${description.slice(0, 100)}`;
+}
+
 function loadRecent(address: string): ActivityItem[] {
   try {
     const raw = localStorage.getItem(recentKey(address));
@@ -539,7 +569,7 @@ function RecentRow({ item }: { item: ActivityItem }) {
   } else {
     snapshotLine = (
       <span className="recent-status recent-status-fail" title={item.submission.error}>
-        Snapshot rejected ({item.submission.status}): {item.submission.error.slice(0, 80)}
+        {friendlySnapshotError(item.submission.status, item.submission.error, space)}
       </span>
     );
   }
