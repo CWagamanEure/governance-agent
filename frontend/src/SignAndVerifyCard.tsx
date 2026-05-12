@@ -244,6 +244,7 @@ export function SignAndVerifyCard({
         policy: profile.profile_json,
         analysis: signed.analysis,
         proposal: signed.proposal,
+        token,
       });
       if (runIdRef.current !== myRun) return;
       setVerifyResult(r);

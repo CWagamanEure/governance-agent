@@ -452,11 +452,19 @@ export async function verifyDecisionBlob(args: {
   // the verify guarantee from "internally consistent" to "the analysis
   // belongs to the proposal that was signed".
   proposal?: any;
+  // Optional bearer token. When present the backend can derive the
+  // caller's per-user wallet and accept signatures from it; without it
+  // only the app-default wallet is in the valid-agents set, so per-user
+  // signed blobs report AGENT_ADDRESS mismatch even when otherwise valid.
+  token?: string;
 }): Promise<DecisionVerifyResult> {
+  const { token, ...rest } = args;
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (token) headers.authorization = `Bearer ${token}`;
   const r = await fetch(`${BACKEND_URL}/decision/verify`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(args),
+    headers,
+    body: JSON.stringify(rest),
   });
   if (!r.ok) throw new Error(`verify failed: ${r.status} ${await r.text()}`);
   return r.json();
